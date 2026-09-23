@@ -1,0 +1,52 @@
+#!/bin/sh
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+if [ "${DEV_DIARY_SKIP:-}" = "1" ]; then
+  exit 0
+fi
+
+hash_stream() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1; exit}'
+  else
+    sha256sum | awk '{print $1; exit}'
+  fi
+}
+
+index_stamp() {
+  git diff --cached --binary -- . ':(exclude)dev-diary' | hash_stream
+}
+
+if [ "${1:-}" = "--stamp" ]; then
+  index_stamp
+  exit 0
+fi
+
+if git diff --cached --quiet -- . ':(exclude)dev-diary'; then
+  exit 0
+fi
+
+stamp=$(index_stamp)
+day=$(date +%Y-%m-%d)
+file="dev-diary/${day}.md"
+indexed=$(git show ":${file}" 2>/dev/null || true)
+
+if printf '%s\n' "$indexed" | grep -q "dev-diary-stamp: ${stamp}"; then
+  exit 0
+fi
+
+cat >&2 <<EOF
+Коммит остановлен: дневник за ${day} не в индексе или штамп не совпадает с изменениями.
+
+1. В индексе оставь изменения коммита, без папки dev-diary/.
+2. Штамп: .githooks/pre-commit --stamp
+3. Перепиши целиком dev-diary/${day}.md — кратко, что изменилось за этот день. Последняя строка:
+   <!-- dev-diary-stamp: ШТАМП -->
+4. git add dev-diary/${day}.md и повтори коммит.
+
+Правила для любого агента: AGENTS.md
+Обход одного коммита: DEV_DIARY_SKIP=1 git commit ...
+EOF
+exit 1
