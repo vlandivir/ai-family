@@ -15,7 +15,7 @@ export function runAgent(prompt) {
   }
   busy = true;
   return new Promise((resolve, reject) => {
-    const child = spawn(agentBin, ["-p", "--trust", prompt], {
+    const child = spawn(agentBin, ["-p", "--trust", "--approve-mcps", prompt], {
       cwd: workspace,
       env: process.env,
     });
