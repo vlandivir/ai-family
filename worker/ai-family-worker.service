@@ -1,0 +1,19 @@
+[Unit]
+Description=ai-family worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ai-family.env
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin
+Environment=AGENT_BIN=/root/.local/bin/agent
+Environment=AGENT_WORKSPACE=/var/lib/ai-family/workspace
+WorkingDirectory=/opt/ai-family/worker
+ExecStartPre=/usr/bin/mkdir -p /var/lib/ai-family/workspace
+ExecStart=/usr/bin/node /opt/ai-family/worker/src/index.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
