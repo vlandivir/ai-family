@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { chmod } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { dbGet, dbInsert, dbPatch } from "./db.js";
 import { getChatId } from "./agent/sessions.js";
@@ -11,14 +14,27 @@ export function listingUrl(text) {
   return text.match(/https?:\/\/[^\s)]+/)?.[0] || null;
 }
 
+function safeError(error) {
+  return String(error.message || error)
+    .replace(/github_pat_\S+/g, "[скрыто]")
+    .replace(/Bearer\s+\S+/g, "Bearer [скрыто]")
+    .slice(0, 500);
+}
+
 async function ensureRepo(repo) {
   const dir = `${repoRoot}/${repo.split("/")[1]}`;
-  const header = `AUTHORIZATION: Bearer ${process.env.GITHUB_PAT}`;
-  const args = ["-c", `http.extraheader=${header}`];
+  const askpass = join(dirname(fileURLToPath(import.meta.url)), "../scripts/git-askpass.sh");
+  await chmod(askpass, 0o700);
+  const env = {
+    ...process.env,
+    GIT_ASKPASS: askpass,
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  const runGit = (args) => git("git", args, { env });
   try {
-    await git("git", [...args, "-C", dir, "pull", "--ff-only"]);
+    await runGit(["-C", dir, "pull", "--ff-only"]);
   } catch {
-    await git("git", [...args, "clone", `https://github.com/${repo}.git`, dir]);
+    await runGit(["clone", `https://github.com/${repo}.git`, dir]);
   }
   return dir;
 }
@@ -93,7 +109,7 @@ export async function runQueued(message, sessionKey, prompt) {
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "failed",
       finished_at: new Date().toISOString(),
-      error: error.message,
+      error: safeError(error),
     });
     throw error;
   }
@@ -162,12 +178,12 @@ export async function runListing(message, sessionKey, topic, url) {
       city: "Belgrade",
       source_url: url,
       fit: "не разобрано",
-      notes: error.message,
+      notes: safeError(error),
     });
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "failed",
       finished_at: new Date().toISOString(),
-      error: error.message,
+      error: safeError(error),
     });
     throw error;
   }

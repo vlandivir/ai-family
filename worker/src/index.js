@@ -49,6 +49,7 @@ await poll(async (message) => {
       : await runQueued(message, sessionKey(message), promptFor(message, topic));
     await sendAnswer(message.chatId, answer, message.threadId);
   } catch (error) {
-    await reply(`Не вышло: ${error.message}`);
+    console.error("job failed", error.message);
+    await reply("Не вышло разобрать сообщение. Подробность осталась в логе сервера.");
   }
 });
