@@ -10,4 +10,4 @@
 
 `cli-permissions.json` разрешает веб-поиск, чтение страниц, `git`, файлы рабочей папки и MCP GitHub. Чтение `.env` и `rm` запрещены.
 
-Сессии диалогов — файл `/var/lib/ai-family/telegram-chats.json` на хосте. Это состояние машины, в git его нет. У каждого Telegram id свой id чата Cursor.
+Сессии диалогов — каталог `/var/lib/ai-family/chats/` на хосте, один файл на Telegram id. В файле id чата Cursor, `startedAt` и `updatedAt`. Это состояние машины, в git его нет. Самые старые — с самой ранней `startedAt`. Старый общий `telegram-chats.json` при первом запуске раскладывается по этим файлам.

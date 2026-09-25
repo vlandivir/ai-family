@@ -30,6 +30,21 @@ async function call(method, body) {
   return payload.result;
 }
 
+function escapeHtml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+export function toTelegramHtml(text) {
+  const escaped = escapeHtml(text);
+  return escaped
+    .replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>")
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+}
+
 export function sendMessage(chatId, text) {
   const chunks = [];
   let rest = text || "пусто";
@@ -37,10 +52,18 @@ export function sendMessage(chatId, text) {
     chunks.push(rest.slice(0, 4000));
     rest = rest.slice(4000);
   }
-  return chunks.reduce(
-    (chain, chunk) => chain.then(() => call("sendMessage", { chat_id: chatId, text: chunk })),
-    Promise.resolve(),
-  );
+  return chunks.reduce(async (chain, chunk) => {
+    await chain;
+    try {
+      await call("sendMessage", {
+        chat_id: chatId,
+        text: toTelegramHtml(chunk),
+        parse_mode: "HTML",
+      });
+    } catch {
+      await call("sendMessage", { chat_id: chatId, text: chunk });
+    }
+  }, Promise.resolve());
 }
 
 export async function poll(onText) {
