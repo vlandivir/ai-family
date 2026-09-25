@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { clearChatId, getChatId, setChatId } from "./sessions.js";
 
 const agentBin = process.env.AGENT_BIN || "/root/.local/bin/agent";
 const workspace = process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace";
@@ -9,16 +10,9 @@ export function agentBusy() {
   return busy;
 }
 
-export function runAgent(prompt) {
-  if (busy) {
-    return Promise.reject(new Error("busy"));
-  }
-  busy = true;
+function run(args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(agentBin, ["-p", "--trust", "--approve-mcps", prompt], {
-      cwd: workspace,
-      env: process.env,
-    });
+    const child = spawn(agentBin, args, { cwd: workspace, env: process.env });
     let out = "";
     let err = "";
     child.stdout.on("data", (chunk) => {
@@ -27,12 +21,8 @@ export function runAgent(prompt) {
     child.stderr.on("data", (chunk) => {
       err += chunk;
     });
-    child.on("error", (error) => {
-      busy = false;
-      reject(error);
-    });
+    child.on("error", reject);
     child.on("close", (code) => {
-      busy = false;
       if (code !== 0) {
         reject(new Error(err.trim() || `agent exited ${code}`));
         return;
@@ -40,4 +30,31 @@ export function runAgent(prompt) {
       resolve(out.trim());
     });
   });
+}
+
+async function createChat(userId) {
+  const id = (await run(["create-chat"])).split("\n").filter(Boolean).at(-1);
+  if (!id) throw new Error("agent create-chat returned no id");
+  await setChatId(userId, id);
+  return id;
+}
+
+export async function runAgent(userId, prompt) {
+  if (busy) {
+    return Promise.reject(new Error("busy"));
+  }
+  busy = true;
+  try {
+    let chatId = await getChatId(userId);
+    if (!chatId) chatId = await createChat(userId);
+    try {
+      return await run(["-p", "--trust", "--approve-mcps", "--resume", chatId, prompt]);
+    } catch {
+      await clearChatId(userId);
+      chatId = await createChat(userId);
+      return await run(["-p", "--trust", "--approve-mcps", "--resume", chatId, prompt]);
+    }
+  } finally {
+    busy = false;
+  }
 }

@@ -34,6 +34,10 @@ fi
 export PATH="$HOME/.local/bin:$PATH"
 echo "agent $(agent --version)"
 
+if [ -f "$(dirname "$0")/install-agent-config.sh" ]; then
+  bash "$(dirname "$0")/install-agent-config.sh"
+fi
+
 if [ -z "${CURSOR_API_KEY:-}" ]; then
   echo "CURSOR_API_KEY не задан, пробный запуск пропущен"
 else

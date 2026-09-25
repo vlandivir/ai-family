@@ -67,7 +67,7 @@ export async function poll(onText) {
         continue;
       }
       try {
-        await onText(message.chat.id, message.text);
+        await onText(message.chat.id, userId, message.text);
       } catch (error) {
         console.error("handler", error.message);
       }

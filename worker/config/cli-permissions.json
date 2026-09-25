@@ -1,0 +1,21 @@
+{
+  "approvalMode": "allowlist",
+  "autoAcceptWebSearch": true,
+  "permissions": {
+    "allow": [
+      "Shell(ls)",
+      "Shell(git)",
+      "Mcp(github:*)",
+      "WebFetch(*)",
+      "Read(**)",
+      "Write(**)"
+    ],
+    "deny": [
+      "Shell(rm)",
+      "Read(.env*)",
+      "Read(**/.env*)",
+      "Write(**/.env*)",
+      "Write(**/*.key)"
+    ]
+  }
+}
