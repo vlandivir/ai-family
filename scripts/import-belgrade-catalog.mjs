@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import vm from "node:vm";
 
-const catalogDir = process.argv[2] || "/Users/vladryba/dev/codex-notes-ai-2026/20260909-serbia-real-estate";
+const catalogDir = process.argv.slice(2).find((arg) => !arg.startsWith("-"))
+  || "/Users/vladryba/dev/codex-notes-ai-2026/20260909-serbia-real-estate";
 const dataPath = join(catalogDir, "assets/listings-data.js");
 const photosDir = join(catalogDir, "assets/listings");
 
@@ -14,11 +15,100 @@ function required(name) {
   return value;
 }
 
-function loadListings() {
+function loadScript(path, names) {
   const context = { console };
   vm.createContext(context);
-  vm.runInContext(`${readFileSync(dataPath, "utf8")}\nthis.listings = listings;`, context);
-  return context.listings;
+  const assign = names.map((name) => `this.${name} = ${name};`).join("\n");
+  vm.runInContext(`${readFileSync(path, "utf8")}\n${assign}`, context);
+  return context;
+}
+
+function loadListings() {
+  return loadScript(dataPath, ["listings"]).listings;
+}
+
+function categoryOf(item) {
+  if (item.category) return item.category;
+  return item.propertyType === "house" ? "houses" : "living";
+}
+
+function marketOf(item, assessments) {
+  const assessment = assessments[item.slug];
+  if (!assessment || !item.price || !item.area) return null;
+  const unitPrice = assessment.unitPrice || Math.round(item.price / item.area);
+  const difference = Math.round((unitPrice / assessment.benchmark - 1) * 100);
+  let tone = "fair";
+  let label = "В рынке";
+  if (difference <= -10) {
+    tone = "below";
+    label = "Ниже рынка";
+  } else if (difference >= 10) {
+    tone = "above";
+    label = "Выше рынка";
+  }
+  return {
+    tone,
+    label,
+    difference,
+    unitPrice,
+    benchmark: assessment.benchmark,
+    area: assessment.area,
+    note: assessment.note || null,
+    source: assessment.source,
+    kind: assessment.kind || null,
+  };
+}
+
+function heatingOf(item, number, heating) {
+  const model = heating.heatingModels[heating.heatingAssignments[number]];
+  if (!model) return null;
+  const box = { tone: model.tone, label: model.label, verdict: model.verdict, note: model.note };
+  if (!model.annualPerM2 || !item.area) return box;
+  const annualMin = Math.round(item.area * model.annualPerM2[0] / 100) * 100;
+  const annualMax = Math.round(item.area * model.annualPerM2[1] / 100) * 100;
+  box.annualMin = annualMin;
+  box.annualMax = annualMax;
+  box.monthlyEuroMin = Math.round(annualMin / 12 / heating.heatingExchangeRate);
+  box.monthlyEuroMax = Math.round(annualMax / 12 / heating.heatingExchangeRate);
+  return box;
+}
+
+function detailsOf(item, number, extras) {
+  return {
+    slug: item.slug,
+    category: categoryOf(item),
+    floor: item.floor || null,
+    year: item.year || null,
+    route: item.route || null,
+    description: item.description || null,
+    problems: item.problems || [],
+    criteria: item.criteria || [],
+    wifeChecklist: item.wifeChecklist || null,
+    duplicates: item.duplicates || null,
+    priceHistory: item.priceHistory || null,
+    availabilityStatus: item.availabilityStatus || null,
+    availabilityLabel: item.availabilityLabel || null,
+    availabilityNote: item.availabilityNote || null,
+    availabilityChecked: item.availabilityChecked || null,
+    rentText: item.rentText || null,
+    yieldText: item.yieldText || null,
+    rentSource: item.rentSource || null,
+    map: item.map || null,
+    source: item.source || null,
+    completion: item.completion || null,
+    reference: Boolean(item.reference),
+    rentalBudgetDelta: item.rentalBudgetDelta || null,
+    budgetNote: item.budgetNote || null,
+    statusLabel: item.statusLabel || null,
+    developer: item.developer || null,
+    developerRating: item.developerRating || null,
+    developerEvidence: item.developerEvidence || null,
+    developerWarning: item.developerWarning || null,
+    developerUrl: item.developerUrl || null,
+    projectUrl: item.projectUrl || null,
+    market: marketOf(item, extras.marketAssessments),
+    heating: heatingOf(item, number, extras.heating),
+  };
 }
 
 function yearOf(value) {
@@ -70,6 +160,22 @@ function uploadPhotos() {
 }
 
 const listings = loadListings();
+const extras = {
+  marketAssessments: loadScript(join(catalogDir, "assets/market-data.js"), ["marketAssessments"]).marketAssessments,
+  heating: loadScript(join(catalogDir, "assets/heating-data.js"), ["heatingModels", "heatingAssignments", "heatingExchangeRate"]),
+};
+if (process.argv.includes("--details")) {
+  let updated = 0;
+  for (const [index, item] of listings.entries()) {
+    await rest(`listings?catalog_number=eq.${index + 1}`, {
+      method: "PATCH",
+      body: { details: detailsOf(item, index + 1, extras) },
+    });
+    updated += 1;
+  }
+  console.log(`updated ${updated} cards`);
+  process.exit(0);
+}
 uploadPhotos();
 const project = (await rest("projects?slug=eq.belgrade-apartments&select=id&limit=1"))[0];
 const present = new Set(
@@ -98,20 +204,7 @@ for (const [index, item] of listings.entries()) {
       year_built: yearOf(item.year),
       fit: item.statusLabel || null,
       notes: Array.isArray(item.problems) ? item.problems.join("\n") : null,
-      details: {
-        slug: item.slug,
-        floor: item.floor || null,
-        year: item.year || null,
-        route: item.route || null,
-        category: item.category || null,
-        description: item.description || null,
-        problems: item.problems || [],
-        criteria: item.criteria || [],
-        rentText: item.rentText || null,
-        yieldText: item.yieldText || null,
-        statusLabel: item.statusLabel || null,
-        source: item.source || null,
-      },
+      details: detailsOf(item, catalogNumber, extras),
     },
   });
   const listingId = created[0].id;
