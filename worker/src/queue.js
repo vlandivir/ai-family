@@ -125,7 +125,10 @@ export async function runListing(message, sessionKey, topic, url) {
     topic.rule,
     `Ссылка: ${url}`,
     "Прочитай APARTMENT_SELECTION_INSTRUCTIONS.md в текущей папке и открой ссылку.",
-    "Ответь коротко, насколько квартира подходит.",
+    "Сначала реши, это страница одного объявления о квартире или доме.",
+    "Витрина, каталог, поиск, статья и наша собственная страница — не объявление.",
+    "Если это не объявление, ответь по смыслу и закончи блоком {\"is_listing\":false}. Карточку не заполняй.",
+    "Если это объявление, ответь коротко, насколько квартира подходит.",
     "Один и тот же объект объединяй, даже если ссылка отличается параметрами.",
     "Сверяй адрес, дом, площадь и площадку, не полную строку URL.",
     "Уже известные карточки:",
@@ -133,7 +136,7 @@ export async function runListing(message, sessionKey, topic, url) {
     "Если это уже известный объект, поставь его id в match_id. Иначе match_id оставь null.",
     "В конце добавь блок ровно в таком виде:",
     "<<<JSON>>>",
-    '{"match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
+    '{"is_listing":true,"match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
     "<<<END>>>",
   ].join("\n");
   const inserted = await dbInsert("agent_jobs", {
@@ -154,6 +157,15 @@ export async function runListing(message, sessionKey, topic, url) {
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
     const { prose, card } = cardFromAnswer(text);
+    if (card?.is_listing === false) {
+      await dbPatch(`agent_jobs?id=eq.${job.id}`, {
+        status: "succeeded",
+        finished_at: new Date().toISOString(),
+        model,
+        result: { text: prose },
+      });
+      return prose || "Это не страница объявления.";
+    }
     const known = await dbGet(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
     const match = known.find((item) => item.id === card?.match_id);
     const row = listingRow(project.id, url, card, prose);
