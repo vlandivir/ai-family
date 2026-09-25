@@ -1,6 +1,10 @@
 {
   "default": "",
   "topics": {
-    "28": "Это тема выбора квартиры для покупки в Белграде. Правила отбора в приватном репозитории vlandivir/ai-family-belgrade-apartments, файл APARTMENT_SELECTION_INSTRUCTIONS.md. Отвечай в общем диалоге темы. Карточку в базу пока не создавай."
+    "28": {
+      "project": "belgrade-apartments",
+      "repo": "vlandivir/ai-family-belgrade-apartments",
+      "rule": "Это тема выбора квартиры для покупки в Белграде. Если в сообщении есть ссылка, разбери объявление по APARTMENT_SELECTION_INSTRUCTIONS.md в этом репозитории."
+    }
   }
 }
