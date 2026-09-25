@@ -95,13 +95,14 @@ export async function runQueued(message, sessionKey, prompt, cwd) {
   });
   const job = inserted[0];
   try {
-    const { text, chatId } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, cwd);
+    const { text, chatId, model } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, cwd);
     if (chatId && chatId !== conversation.cursor_chat_id) {
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "succeeded",
       finished_at: new Date().toISOString(),
+      model,
       result: { text },
     });
     return text;
@@ -109,6 +110,7 @@ export async function runQueued(message, sessionKey, prompt, cwd) {
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "failed",
       finished_at: new Date().toISOString(),
+      model: error.model || null,
       error: safeError(error),
     });
     throw error;
@@ -124,9 +126,14 @@ export async function runListing(message, sessionKey, topic, url) {
     `Ссылка: ${url}`,
     "Прочитай APARTMENT_SELECTION_INSTRUCTIONS.md в текущей папке и открой ссылку.",
     "Ответь коротко, насколько квартира подходит.",
+    "Один и тот же объект объединяй, даже если ссылка отличается параметрами.",
+    "Сверяй адрес, дом, площадь и площадку, не полную строку URL.",
+    "Уже известные карточки:",
+    await knownListings(project.id),
+    "Если это уже известный объект, поставь его id в match_id. Иначе match_id оставь null.",
     "В конце добавь блок ровно в таком виде:",
     "<<<JSON>>>",
-    '{"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
+    '{"match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
     "<<<END>>>",
   ].join("\n");
   const inserted = await dbInsert("agent_jobs", {
@@ -142,31 +149,27 @@ export async function runListing(message, sessionKey, topic, url) {
   });
   const job = inserted[0];
   try {
-    const { text, chatId } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, dir);
+    const { text, chatId, model } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, dir);
     if (chatId && chatId !== conversation.cursor_chat_id) {
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
     const { prose, card } = cardFromAnswer(text);
-    const row = {
-      project_id: project.id,
-      status: card ? "new" : "error",
-      city: "Belgrade",
-      neighborhood: card?.neighborhood || null,
-      address: card?.address || null,
-      source_url: url,
-      asking_price_eur: numberOrNull(card?.asking_price_eur),
-      area_m2: numberOrNull(card?.area_m2),
-      rooms: numberOrNull(card?.rooms),
-      floor: numberOrNull(card?.floor),
-      year_built: numberOrNull(card?.year_built),
-      heating: card?.heating || null,
-      fit: card?.fit || "не разобрано",
-      notes: card ? card.notes || prose : prose || "Агент не вернул карточку",
-    };
-    await dbInsert("listings", row);
+    const known = await dbGet(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
+    const match = known.find((item) => item.id === card?.match_id);
+    const row = listingRow(project.id, url, card, prose);
+    if (match) {
+      row.source_urls = mergeUrls(match, url);
+      delete row.project_id;
+      delete row.status;
+      await dbPatch(`listings?id=eq.${match.id}`, row);
+    } else {
+      row.source_urls = [url];
+      await dbInsert("listings", row);
+    }
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: card ? "succeeded" : "failed",
       finished_at: new Date().toISOString(),
+      model,
       result: { text: prose },
       error: card ? null : "no card json",
     });
@@ -183,10 +186,52 @@ export async function runListing(message, sessionKey, topic, url) {
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "failed",
       finished_at: new Date().toISOString(),
+      model: error.model || null,
       error: safeError(error),
     });
     throw error;
   }
+}
+
+async function knownListings(projectId) {
+  const rows = await dbGet(
+    `listings?project_id=eq.${projectId}&status=neq.error&select=id,address,neighborhood,area_m2,source_url,source_urls&order=created_at.desc&limit=40`,
+  );
+  if (!rows.length) return "нет";
+  return rows
+    .map((row) => {
+      const urls = Array.isArray(row.source_urls) && row.source_urls.length
+        ? row.source_urls
+        : [row.source_url];
+      return [row.id, row.address || "", row.neighborhood || "", row.area_m2 ?? "", urls.filter(Boolean).join(" ")].join(" | ");
+    })
+    .join("\n");
+}
+
+function mergeUrls(match, url) {
+  const urls = new Set(
+    [...(Array.isArray(match.source_urls) ? match.source_urls : []), match.source_url, url].filter(Boolean),
+  );
+  return [...urls];
+}
+
+function listingRow(projectId, url, card, prose) {
+  return {
+    project_id: projectId,
+    status: "new",
+    city: "Belgrade",
+    neighborhood: card?.neighborhood || null,
+    address: card?.address || null,
+    source_url: url,
+    asking_price_eur: numberOrNull(card?.asking_price_eur),
+    area_m2: numberOrNull(card?.area_m2),
+    rooms: numberOrNull(card?.rooms),
+    floor: numberOrNull(card?.floor),
+    year_built: numberOrNull(card?.year_built),
+    heating: card?.heating || null,
+    notes: card?.notes || prose || null,
+    fit: card?.fit || null,
+  };
 }
 
 function numberOrNull(value) {

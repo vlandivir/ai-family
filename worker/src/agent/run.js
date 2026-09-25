@@ -24,12 +24,37 @@ function run(args, cwd = workspace) {
     child.on("error", reject);
     child.on("close", (code) => {
       if (code !== 0) {
-        reject(new Error(err.trim() || `agent exited ${code}`));
+        const error = new Error(err.trim() || `agent exited ${code}`);
+        error.stdout = out;
+        reject(error);
         return;
       }
       resolve(out.trim());
     });
   });
+}
+
+function parseAgentOutput(raw) {
+  let model = null;
+  let text = "";
+  for (const line of String(raw || "").split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event.type === "system" && event.subtype === "init" && event.model) {
+      model = event.model;
+    }
+    if (event.type === "assistant") {
+      const parts = event.message?.content || [];
+      const piece = parts.filter((part) => part.type === "text").map((part) => part.text).join("");
+      if (piece) text = piece;
+    }
+  }
+  return { text: text.trim(), model };
 }
 
 async function createChat(userId, cwd) {
@@ -47,13 +72,30 @@ export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
   try {
     let chatId = cursorChatId || (await getChatId(userId));
     if (!chatId) chatId = await createChat(userId, cwd);
-    const ask = (id) => run(["-p", "--trust", "--approve-mcps", "--resume", id, prompt], cwd);
+    const ask = async (id) => {
+      try {
+        return parseAgentOutput(await run(
+          ["-p", "--trust", "--approve-mcps", "--output-format", "stream-json", "--resume", id, prompt],
+          cwd,
+        ));
+      } catch (error) {
+        const parsed = parseAgentOutput(error.stdout);
+        error.model = parsed.model;
+        throw error;
+      }
+    };
     try {
-      return { text: await ask(chatId), chatId };
-    } catch {
+      return { ...(await ask(chatId)), chatId };
+    } catch (error) {
+      if (error.message === "busy") throw error;
       await clearChatId(userId);
       chatId = await createChat(userId, cwd);
-      return { text: await ask(chatId), chatId };
+      try {
+        return { ...(await ask(chatId)), chatId };
+      } catch (retryError) {
+        retryError.model = retryError.model || error.model;
+        throw retryError;
+      }
     }
   } finally {
     busy = false;
