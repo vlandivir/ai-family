@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentBusy, runAgent } from "./agent/run.js";
-import { poll, sendMessage } from "./telegram/poll.js";
+import { agentBusy } from "./agent/run.js";
+import { runQueued } from "./queue.js";
+import { poll, sendAnswer, sendMessage } from "./telegram/poll.js";
 
 const topicsPath = join(dirname(fileURLToPath(import.meta.url)), "../config/topics.json");
 const topics = JSON.parse(await readFile(topicsPath, "utf8"));
@@ -36,8 +37,8 @@ await poll(async (message) => {
   }
   await reply("Беру в работу.");
   try {
-    const answer = await runAgent(sessionKey(message), promptFor(message));
-    await reply(answer);
+    const answer = await runQueued(message, sessionKey(message), promptFor(message));
+    await sendAnswer(message.chatId, answer, message.threadId);
   } catch (error) {
     await reply(`Не вышло: ${error.message}`);
   }

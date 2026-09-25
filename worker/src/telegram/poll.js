@@ -1,3 +1,7 @@
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const api = "https://api.telegram.org";
 
 function allowedIds() {
@@ -37,12 +41,127 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
-export function toTelegramHtml(text) {
-  const escaped = escapeHtml(text);
-  return escaped
-    .replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>")
+function formatInline(text) {
+  return escapeHtml(text)
     .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+}
+
+function splitRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isSeparator(line) {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line.trim());
+}
+
+function isTableRow(line) {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.slice(1).includes("|");
+}
+
+const renderScript = join(dirname(fileURLToPath(import.meta.url)), "../scripts/render-table.py");
+
+function parseTable(rows) {
+  const headers = splitRow(rows[0]);
+  const body = rows.slice(1).filter((line) => !isSeparator(line)).map(splitRow);
+  return { headers, rows: body };
+}
+
+function renderTable(table) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", [renderScript]);
+    const chunks = [];
+    let err = "";
+    child.stdout.on("data", (chunk) => chunks.push(chunk));
+    child.stderr.on("data", (chunk) => {
+      err += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) reject(new Error(err.trim() || "table render failed"));
+      else resolve(Buffer.concat(chunks));
+    });
+    child.stdin.end(JSON.stringify(table));
+  });
+}
+
+function tableToHtml(rows) {
+  const headers = splitRow(rows[0]);
+  const body = rows.slice(1).filter((line) => !isSeparator(line));
+  return body
+    .map((line) => {
+      const cells = splitRow(line);
+      const title = formatInline(cells[0] || "");
+      const rest = headers.slice(1).map((header, index) => {
+        const value = cells[index + 1] || "";
+        if (!value || value === "—") return "";
+        return `${formatInline(header)}: ${formatInline(value)}`;
+      }).filter(Boolean);
+      return [`<b>${title}</b>`, ...rest].join("\n");
+    })
+    .join("\n\n");
+}
+
+export function toTelegramHtml(text) {
+  const lines = text.split("\n");
+  const chunks = [];
+  let index = 0;
+  while (index < lines.length) {
+    if (!isTableRow(lines[index])) {
+      const start = index;
+      while (index < lines.length && !isTableRow(lines[index])) index += 1;
+      chunks.push(formatInline(lines.slice(start, index).join("\n")).replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>"));
+      continue;
+    }
+    const start = index;
+    while (index < lines.length && (isTableRow(lines[index]) || isSeparator(lines[index]))) index += 1;
+    chunks.push(tableToHtml(lines.slice(start, index)));
+  }
+  return chunks.join("\n");
+}
+
+async function sendPhoto(chatId, png, threadId) {
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  if (threadId != null) form.set("message_thread_id", String(threadId));
+  form.set("photo", new Blob([png], { type: "image/png" }), "table.png");
+  const response = await fetch(`${api}/bot${token()}/sendPhoto`, { method: "POST", body: form });
+  const payload = await response.json();
+  if (!payload.ok) throw new Error(payload.description || "sendPhoto");
+}
+
+export async function sendAnswer(chatId, text, threadId) {
+  const lines = (text || "").split("\n");
+  let index = 0;
+  let sent = false;
+  while (index < lines.length) {
+    if (!isTableRow(lines[index])) {
+      const start = index;
+      while (index < lines.length && !isTableRow(lines[index])) index += 1;
+      const chunk = lines.slice(start, index).join("\n").trim();
+      if (chunk) {
+        await sendMessage(chatId, chunk, threadId);
+        sent = true;
+      }
+      continue;
+    }
+    const start = index;
+    while (index < lines.length && (isTableRow(lines[index]) || isSeparator(lines[index]))) index += 1;
+    try {
+      await sendPhoto(chatId, await renderTable(parseTable(lines.slice(start, index))), threadId);
+    } catch (error) {
+      console.error("table image", error.message);
+      await sendMessage(chatId, lines.slice(start, index).join("\n"), threadId);
+    }
+    sent = true;
+  }
+  if (!sent) await sendMessage(chatId, text, threadId);
 }
 
 export function sendMessage(chatId, text, threadId) {

@@ -39,20 +39,21 @@ async function createChat(userId) {
   return id;
 }
 
-export async function runAgent(userId, prompt) {
+export async function runAgent(userId, prompt, cursorChatId) {
   if (busy) {
     return Promise.reject(new Error("busy"));
   }
   busy = true;
   try {
-    let chatId = await getChatId(userId);
+    let chatId = cursorChatId || (await getChatId(userId));
     if (!chatId) chatId = await createChat(userId);
+    const ask = (id) => run(["-p", "--trust", "--approve-mcps", "--resume", id, prompt]);
     try {
-      return await run(["-p", "--trust", "--approve-mcps", "--resume", chatId, prompt]);
+      return { text: await ask(chatId), chatId };
     } catch {
       await clearChatId(userId);
       chatId = await createChat(userId);
-      return await run(["-p", "--trust", "--approve-mcps", "--resume", chatId, prompt]);
+      return { text: await ask(chatId), chatId };
     }
   } finally {
     busy = false;
