@@ -65,7 +65,7 @@ function isTableRow(line) {
   return trimmed.startsWith("|") && trimmed.slice(1).includes("|");
 }
 
-const renderScript = join(dirname(fileURLToPath(import.meta.url)), "../scripts/render-table.py");
+const renderScript = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/render-table.py");
 
 function parseTable(rows) {
   const headers = splitRow(rows[0]);

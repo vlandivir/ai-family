@@ -6,7 +6,8 @@
 
 1. Запустить `scripts/setup-worker.sh` от root. Он ставит Node.js 22 и Cursor CLI.
 2. Положить `/etc/ai-family.env` и запустить `scripts/install-agent-config.sh` от root. Скрипт копирует `mcp.json` в `/root/.cursor/mcp.json` и вливает `cli-permissions.json` в `/root/.cursor/cli-config.json`.
-3. Скопировать каталог `worker/` в `/opt/ai-family/worker` и включить `worker/ai-family-worker.service`.
+3. Склонировать этот репозиторий в `/opt/ai-family` и включить `worker/ai-family-worker.service`.
+4. Пуш в `main` деплоит сам: GitHub Actions заходит по отдельному SSH-ключу и запускает `scripts/deploy.sh`. Ключ на сервере ограничен этой командой. Приватная половина лежит в секретах репозитория `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`.
 
 `cli-permissions.json` разрешает веб-поиск, чтение страниц, `git`, файлы рабочей папки и MCP GitHub. Чтение `.env` и `rm` запрещены.
 
