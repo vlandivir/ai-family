@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -187,6 +188,33 @@ export function sendMessage(chatId, text, threadId) {
   }, Promise.resolve());
 }
 
+function namedFile(file, fallback) {
+  const name = file?.file_name || fallback;
+  return {
+    id: file.file_id,
+    name: name.replace(/[^\w.\-]+/g, "_").slice(0, 80) || fallback,
+  };
+}
+
+function attachments(message) {
+  const files = [];
+  if (message.document) files.push(namedFile(message.document, "file"));
+  if (message.photo?.length) files.push(namedFile(message.photo.at(-1), "photo.jpg"));
+  if (message.video) files.push(namedFile(message.video, "video.mp4"));
+  if (message.audio) files.push(namedFile(message.audio, "audio"));
+  if (message.voice) files.push(namedFile(message.voice, "voice.ogg"));
+  if (message.animation) files.push(namedFile(message.animation, "animation.mp4"));
+  return files;
+}
+
+export async function downloadTelegramFile(fileId, dest) {
+  const info = await call("getFile", { file_id: fileId });
+  const response = await fetch(`${api}/file/bot${token()}/${info.file_path}`);
+  if (!response.ok) throw new Error("file download failed");
+  await mkdir(dirname(dest), { recursive: true });
+  await writeFile(dest, Buffer.from(await response.arrayBuffer()));
+}
+
 export async function poll(onText) {
   let offset = 0;
   const allow = allowedIds();
@@ -199,10 +227,21 @@ export async function poll(onText) {
       await new Promise((resolve) => setTimeout(resolve, 3000));
       continue;
     }
+    let pending = null;
+    const deliver = async (incoming) => {
+      try {
+        await onText(incoming);
+      } catch (error) {
+        console.error("handler", error.message);
+      }
+    };
     for (const update of updates) {
       offset = update.update_id + 1;
       const message = update.message;
-      if (!message?.text || message.from?.is_bot) continue;
+      if (!message || message.from?.is_bot) continue;
+      const text = message.text || message.caption || "";
+      const files = attachments(message);
+      if (!text && !files.length) continue;
       const chatType = message.chat?.type;
       const userId = String(message.from.id);
       const inGroup = chatType === "group" || chatType === "supergroup";
@@ -212,18 +251,24 @@ export async function poll(onText) {
         continue;
       }
       const name = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ");
-      try {
-        await onText({
-          chatId: message.chat.id,
-          userId,
-          text: message.text,
-          threadId: message.message_thread_id ?? null,
-          inGroup,
-          senderName: name || message.from.username || userId,
-        });
-      } catch (error) {
-        console.error("handler", error.message);
+      const incoming = {
+        chatId: message.chat.id,
+        userId,
+        text,
+        files,
+        threadId: message.message_thread_id ?? null,
+        inGroup,
+        senderName: name || message.from.username || userId,
+        mediaGroupId: message.media_group_id || null,
+      };
+      if (incoming.mediaGroupId && pending?.mediaGroupId === incoming.mediaGroupId && pending.chatId === incoming.chatId) {
+        pending.files.push(...files);
+        if (text) pending.text = [pending.text, text].filter(Boolean).join("\n");
+        continue;
       }
+      if (pending) await deliver(pending);
+      pending = incoming;
     }
+    if (pending) await deliver(pending);
   }
 }

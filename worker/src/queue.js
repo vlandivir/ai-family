@@ -134,6 +134,7 @@ export async function runListing(message, sessionKey, topic, url) {
     "Уже известные карточки:",
     await knownListings(project.id),
     "Если это уже известный объект, поставь его id в match_id. Иначе match_id оставь null.",
+    message.filePaths?.length ? `К сообщению приложены файлы. Прочитай их вместе со страницей:\n${message.filePaths.map((path) => `- ${path}`).join("\n")}` : "",
     "В конце добавь блок ровно в таком виде:",
     "<<<JSON>>>",
     '{"is_listing":true,"match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
