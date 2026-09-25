@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentBusy } from "./agent/run.js";
-import { listingUrl, runListing, runQueued } from "./queue.js";
+import { ensureRepo, listingUrl, runListing, runQueued } from "./queue.js";
 import { poll, sendAnswer, sendMessage } from "./telegram/poll.js";
 
 const topicsPath = join(dirname(fileURLToPath(import.meta.url)), "../config/topics.json");
@@ -44,9 +44,10 @@ await poll(async (message) => {
   try {
     const topic = topicConfig(message);
     const url = listingUrl(message.text);
+    const cwd = topic.repo ? await ensureRepo(topic.repo) : undefined;
     const answer = topic.project && url
       ? await runListing(message, sessionKey(message), topic, url)
-      : await runQueued(message, sessionKey(message), promptFor(message, topic));
+      : await runQueued(message, sessionKey(message), promptFor(message, topic), cwd);
     await sendAnswer(message.chatId, answer, message.threadId);
   } catch (error) {
     console.error("job failed", error.message);

@@ -21,7 +21,7 @@ function safeError(error) {
     .slice(0, 500);
 }
 
-async function ensureRepo(repo) {
+export async function ensureRepo(repo) {
   const dir = `${repoRoot}/${repo.split("/")[1]}`;
   const askpass = join(dirname(fileURLToPath(import.meta.url)), "../scripts/git-askpass.sh");
   await chmod(askpass, 0o700);
@@ -81,7 +81,7 @@ async function openConversation(message, sessionKey) {
   return created[0];
 }
 
-export async function runQueued(message, sessionKey, prompt) {
+export async function runQueued(message, sessionKey, prompt, cwd) {
   const conversation = await openConversation(message, sessionKey);
   const inserted = await dbInsert("agent_jobs", {
     conversation_id: conversation.id,
@@ -95,7 +95,7 @@ export async function runQueued(message, sessionKey, prompt) {
   });
   const job = inserted[0];
   try {
-    const { text, chatId } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id);
+    const { text, chatId } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, cwd);
     if (chatId && chatId !== conversation.cursor_chat_id) {
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
