@@ -45,13 +45,14 @@ export function toTelegramHtml(text) {
     .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
 }
 
-export function sendMessage(chatId, text) {
+export function sendMessage(chatId, text, threadId) {
   const chunks = [];
   let rest = text || "пусто";
   while (rest.length > 0) {
     chunks.push(rest.slice(0, 4000));
     rest = rest.slice(4000);
   }
+  const thread = threadId == null ? {} : { message_thread_id: threadId };
   return chunks.reduce(async (chain, chunk) => {
     await chain;
     try {
@@ -59,9 +60,10 @@ export function sendMessage(chatId, text) {
         chat_id: chatId,
         text: toTelegramHtml(chunk),
         parse_mode: "HTML",
+        ...thread,
       });
     } catch {
-      await call("sendMessage", { chat_id: chatId, text: chunk });
+      await call("sendMessage", { chat_id: chatId, text: chunk, ...thread });
     }
   }, Promise.resolve());
 }
@@ -81,16 +83,25 @@ export async function poll(onText) {
     for (const update of updates) {
       offset = update.update_id + 1;
       const message = update.message;
-      if (!message || message.chat?.type !== "private" || !message.text) {
-        continue;
-      }
+      if (!message?.text || message.from?.is_bot) continue;
+      const chatType = message.chat?.type;
       const userId = String(message.from.id);
-      if (!allow.has(userId)) {
+      const inGroup = chatType === "group" || chatType === "supergroup";
+      if (!inGroup && chatType !== "private") continue;
+      if (!inGroup && !allow.has(userId)) {
         console.error(`denied telegram user id=${userId}`);
         continue;
       }
+      const name = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ");
       try {
-        await onText(message.chat.id, userId, message.text);
+        await onText({
+          chatId: message.chat.id,
+          userId,
+          text: message.text,
+          threadId: message.message_thread_id ?? null,
+          inGroup,
+          senderName: name || message.from.username || userId,
+        });
       } catch (error) {
         console.error("handler", error.message);
       }
