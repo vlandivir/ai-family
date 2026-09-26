@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
+import { chmod } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { clearChatId, getChatId, setChatId } from "./sessions.js";
+
+const askpass = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/git-askpass.sh");
 
 const agentBin = process.env.AGENT_BIN || "/root/.local/bin/agent";
 const workspace = process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace";
@@ -11,8 +16,17 @@ export function agentBusy() {
 }
 
 function run(args, cwd = workspace) {
+  const env = {
+    ...process.env,
+    GIT_ASKPASS: askpass,
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_AUTHOR_NAME: "Family bot",
+    GIT_AUTHOR_EMAIL: "vladimir.rybakov@gmail.com",
+    GIT_COMMITTER_NAME: "Family bot",
+    GIT_COMMITTER_EMAIL: "vladimir.rybakov@gmail.com",
+  };
   return new Promise((resolve, reject) => {
-    const child = spawn(agentBin, args, { cwd, env: process.env });
+    const child = spawn(agentBin, args, { cwd, env });
     let out = "";
     let err = "";
     child.stdout.on("data", (chunk) => {
@@ -69,6 +83,7 @@ export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
     return Promise.reject(new Error("busy"));
   }
   busy = true;
+  await chmod(askpass, 0o700).catch(() => {});
   try {
     let chatId = cursorChatId || (await getChatId(userId));
     if (!chatId) chatId = await createChat(userId, cwd);

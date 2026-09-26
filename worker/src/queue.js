@@ -32,9 +32,15 @@ export async function ensureRepo(repo) {
   };
   const runGit = (args) => git("git", args, { env });
   try {
-    await runGit(["-C", dir, "pull", "--ff-only"]);
+    await runGit(["-C", dir, "rev-parse", "--is-inside-work-tree"]);
   } catch {
     await runGit(["clone", `https://github.com/${repo}.git`, dir]);
+    return dir;
+  }
+  try {
+    await runGit(["-C", dir, "pull", "--ff-only"]);
+  } catch (error) {
+    console.error("repo pull", error.message);
   }
   return dir;
 }
