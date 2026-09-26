@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { dbGet, dbInsert, dbPatch } from "./db.js";
 import { getChatId } from "./agent/sessions.js";
+import { retryableJobError } from "./agent/jobs.js";
 import { runAgent } from "./agent/run.js";
 
 const git = promisify(execFile);
@@ -184,6 +185,7 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
     });
     return prose;
   } catch (error) {
+    if (retryableJobError(job, error)) throw error;
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "failed",
       finished_at: new Date().toISOString(),
@@ -280,6 +282,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
     });
     return prose || "Карточка записана, но текст оценки пустой.";
   } catch (error) {
+    if (retryableJobError(job, error)) throw error;
     await dbInsert("listings", {
       project_id: project.id,
       status: "error",

@@ -8,6 +8,10 @@ const askpass = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/git
 
 const agentBin = process.env.AGENT_BIN || "/root/.local/bin/agent";
 const workspace = process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace";
+export const agentTimeoutMs = Number(process.env.AGENT_TIMEOUT_MS || 10 * 60 * 1000);
+if (!Number.isFinite(agentTimeoutMs) || agentTimeoutMs < 1000) {
+  throw new Error("AGENT_TIMEOUT_MS must be at least 1000 milliseconds");
+}
 
 const active = new Set();
 
@@ -15,7 +19,7 @@ export function agentBusy(key) {
   return key == null ? active.size > 0 : active.has(key);
 }
 
-function run(args, cwd = workspace) {
+export function run(args, cwd = workspace, { spawnChild = spawn, timeoutMs = agentTimeoutMs } = {}) {
   const env = {
     ...process.env,
     GIT_ASKPASS: askpass,
@@ -26,17 +30,45 @@ function run(args, cwd = workspace) {
     GIT_COMMITTER_EMAIL: "vladimir.rybakov@gmail.com",
   };
   return new Promise((resolve, reject) => {
-    const child = spawn(agentBin, args, { cwd, env });
+    const child = spawnChild(agentBin, args, { cwd, env, detached: true });
     let out = "";
     let err = "";
+    let timedOut = false;
+    let forceKill;
+    const stop = (signal) => {
+      try {
+        if (child.pid && process.platform !== "win32") process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch (error) {
+        if (error.code !== "ESRCH") console.error("agent stop", error.message);
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop("SIGTERM");
+      forceKill = setTimeout(() => stop("SIGKILL"), 5000);
+    }, timeoutMs);
     child.stdout.on("data", (chunk) => {
-      out += chunk;
+      out = (out + chunk).slice(-5_000_000);
     });
     child.stderr.on("data", (chunk) => {
-      err += chunk;
+      err = (err + chunk).slice(-100_000);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      clearTimeout(forceKill);
+      reject(error);
+    });
     child.on("close", (code) => {
+      clearTimeout(timer);
+      clearTimeout(forceKill);
+      if (timedOut) {
+        const error = new Error(`Агент не завершил работу за ${Math.ceil(timeoutMs / 60_000)} мин`);
+        error.code = "AGENT_TIMEOUT";
+        error.stdout = out;
+        reject(error);
+        return;
+      }
       if (code !== 0) {
         const error = new Error(err.trim() || `agent exited ${code}`);
         error.stdout = out;

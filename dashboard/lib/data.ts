@@ -60,13 +60,14 @@ export async function dashboardData() {
     const active = branchJobs.find((job) => job.status === "running");
     const queued = branchJobs.filter((job) => job.status === "queued");
     const latest = branchJobs[0] || null;
+    const stalled = active?.started_at && Date.now() - new Date(active.started_at).getTime() > 12 * 60_000;
     return {
       ...conversation,
       project: conversation.project_id ? projectById.get(conversation.project_id) || null : null,
       latest,
       active: active || null,
       queueLength: queued.length,
-      state: active ? "running" : queued.length ? "queued" : latest?.status || "idle",
+      state: active ? (stalled ? "stalled" : "running") : queued.length ? "queued" : latest?.status || "idle",
       jobs: branchJobs,
     };
   });

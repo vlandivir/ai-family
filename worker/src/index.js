@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { startTelegramJobs } from "./agent/jobs.js";
+import { retryableJobError, startTelegramJobs } from "./agent/jobs.js";
 import { agentBusy } from "./agent/run.js";
 import { dbInsert, dbPatch } from "./db.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
@@ -110,7 +110,11 @@ async function processTelegramJob(job) {
     await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
   } catch (error) {
     console.error("job failed", error.message);
-    await reply("Не вышло разобрать сообщение. Подробность осталась в логе сервера.");
+    if (!retryableJobError(job, error)) {
+      await reply(error.code === "AGENT_TIMEOUT"
+        ? "Не удалось завершить обработку за несколько попыток. Задача остановлена, чтобы не держать ветку занятой."
+        : "Не вышло разобрать сообщение. Подробность осталась в логе сервера.");
+    }
     throw error;
   }
 }

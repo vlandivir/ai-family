@@ -13,9 +13,15 @@ function time(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
+function elapsed(value: string | null | undefined) {
+  if (!value) return "";
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
+  return minutes < 1 ? "меньше минуты" : `${minutes} мин`;
+}
+
 const labels: Record<string, string> = {
   queued: "В очереди", running: "В работе", succeeded: "Готово",
-  failed: "Ошибка", cancelled: "Отменено", idle: "Нет задач",
+  failed: "Ошибка", cancelled: "Отменено", idle: "Нет задач", stalled: "Задержка",
 };
 
 function content(text: string) {
@@ -52,6 +58,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
   const { chat } = await searchParams;
   const selected = branches.find((branch) => branch.id === chat) || branches[0];
   const running = branches.filter((branch) => branch.state === "running").length;
+  const stalled = branches.filter((branch) => branch.state === "stalled").length;
   const queued = branches.reduce((count, branch) => count + branch.queueLength, 0);
   const failed = branches.filter((branch) => branch.state === "failed").length;
   const branchTitle = (branch: typeof branches[number]) => branch.kind === "private"
@@ -61,7 +68,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
   return <main className="shell">
     <header className="topbar"><div className="brand"><span className="brand-mark">◈</span><div><strong>AI Family</strong><small>Диалоги и задачи</small></div></div><div className="top-actions"><span className="user-email">{user.email}</span><form action="/auth/logout" method="post"><button className="logout">Выйти</button></form></div></header>
     <section className="dialogue-intro"><div><p className="eyebrow">TELEGRAM / АГЕНТЫ</p><h1>Диалоги</h1><p>Сообщения семьи, ответы бота и ход обработки в каждой ветке.</p></div><div className="intro-actions"><small>Обновлено {time(updatedAt)}</small><Refresh /></div></section>
-    <section className="dialogue-stats" aria-label="Сводка"><span><b>{branches.length}</b> ветки</span><span><b>{running}</b> в работе</span><span><b>{queued}</b> в очереди</span><span><b>{failed}</b> с ошибкой</span><span><b>{totalJobs}</b> задач всего</span></section>
+    <section className="dialogue-stats" aria-label="Сводка"><span><b>{branches.length}</b> ветки</span><span><b>{running}</b> в работе</span><span><b>{queued}</b> в очереди</span><span><b>{stalled}</b> задерживаются</span><span><b>{failed}</b> с ошибкой</span><span><b>{totalJobs}</b> задач всего</span></section>
     <div className="dialogue-layout">
       <aside className="dialogue-list" aria-label="Диалоги"><div className="dialogue-list-head"><strong>Все ветки</strong><span>{branches.length}</span></div>
         {branches.map((branch) => {
@@ -78,10 +85,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
               const location = job.payload?.message?.location;
               const incoming = job.payload?.message?.text || job.payload?.text || (job.payload?.message?.files?.length ? "Вложение" : location ? "Геометка" : "Сообщение без текста");
               const sender = job.payload?.message?.senderName || (selected.kind === "private" ? "Вы" : "Участник");
+              const delayed = job.status === "running" && job.started_at && Date.now() - new Date(job.started_at).getTime() > 12 * 60_000;
               return <div className="exchange" key={job.id}>
                 <div className="message incoming"><div className="message-meta"><strong>{sender}</strong><time>{time(job.created_at)}</time></div><div className="message-text">{content(incoming)}</div>{job.artifacts?.length ? <div className="attachments">{job.artifacts.map((item, index) => attachment(job.id, item, index, mediaReady))}</div> : null}</div>
                 {job.result?.text && <div className="message outgoing"><div className="message-meta"><strong>Бот</strong><time>{time(job.finished_at)}</time></div><div className="message-text">{content(job.result.text)}</div></div>}
-                {job.status !== "succeeded" && <div className={`processing-note ${job.status}`}><span className={`status-dot ${job.status}`} />{job.status === "failed" ? `Ошибка: ${job.error || "обработка не завершилась"}` : job.status === "running" ? "Бот обрабатывает сообщение" : labels[job.status] || job.status}{job.attempts > 1 && ` · попытка ${job.attempts}`}</div>}
+                {job.status !== "succeeded" && <div className={`processing-note ${delayed ? "stalled" : job.status}`}><span className={`status-dot ${delayed ? "stalled" : job.status}`} />{job.status === "failed" ? `Ошибка: ${job.error || "обработка не завершилась"}` : delayed ? `Задача задерживается · ${elapsed(job.started_at)}` : job.status === "running" ? `Бот обрабатывает сообщение · ${elapsed(job.started_at)}` : job.status === "queued" && job.attempts > 0 ? "Повторная попытка в очереди" : labels[job.status] || job.status}{job.attempts > 1 && ` · попытка ${job.attempts}`}</div>}
               </div>;
             })}</div>
           </ChatScroll>

@@ -25,6 +25,7 @@
 .dialogue-preview{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#73867a;font-size:11px;margin-top:7px}
 .dialogue-item-foot{display:flex;gap:9px;align-items:center;margin-top:9px;font-size:10px;color:#819389}
 .small-status{color:#4d7d5d}.small-status.running{color:#178479}.small-status.queued{color:#ad7435}.small-status.failed{color:#aa5551}
+.small-status.stalled{color:#aa5551}.badge.stalled{background:#ffebe7;color:#a44c47}
 .conversation{display:flex;flex-direction:column}
 .conversation-head{display:flex;align-items:center;gap:13px;padding:16px 22px;border-bottom:1px solid var(--line);flex:none}
 .conversation-head>div{min-width:0;flex:1}.conversation-head h2{font-size:17px;letter-spacing:-.04em;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -46,6 +47,7 @@
 .attachment-card.photo{width:min(260px,100%)}
 .processing-note{align-self:flex-end;max-width:82%;display:flex;align-items:center;gap:7px;color:#61786a;font-size:10px;padding:5px 9px}
 .processing-note.failed{color:#aa5551}.processing-note.queued{color:#ad7435}
+.processing-note.stalled{color:#aa5551}.status-dot.stalled{background:#d37770}
 .conversation-foot{flex:none;border-top:1px solid var(--line);background:#fff;padding:13px 20px;color:#98a99b;font-size:10px;text-align:center}
 .conversation-empty{margin:auto;color:var(--muted);font-size:13px}
 @media(max-width:760px){.dialogue-intro{align-items:start;flex-direction:column}.intro-actions{width:100%;justify-content:space-between}.dialogue-stats{gap:9px 15px}.dialogue-layout{grid-template-columns:1fr;height:auto;min-height:0}.dialogue-list{max-height:235px}.conversation{height:70vh;min-height:520px}.message{max-width:91%}.conversation-head .badge{font-size:9px}}
