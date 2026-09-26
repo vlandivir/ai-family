@@ -102,7 +102,9 @@ export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
     try {
       return { ...(await ask(chatId)), chatId };
     } catch (error) {
-      if (error.message === "busy") throw error;
+      if (!/(?:chat|conversation|session).*(?:not found|invalid|does not exist)/i.test(error.message)) {
+        throw error;
+      }
       await clearChatId(userId);
       chatId = await createChat(userId, cwd);
       try {

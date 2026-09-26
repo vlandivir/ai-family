@@ -70,6 +70,10 @@ async function workspaceFor(key) {
 async function processTelegramJob(job) {
   const { message, topic, sessionKey: key, url } = job.payload;
   const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
+  const retryRule = job.attempts > 1
+    ? "Предыдущий запуск этой задачи прервался. Продолжи в том же контексте: сначала проверь уже сделанные изменения и не повторяй завершённые действия."
+    : "";
+  const taskTopic = retryRule ? { ...topic, rule: [topic.rule, retryRule].filter(Boolean).join("\n\n") } : topic;
   try {
     await queuedReactions.get(job.id);
     try {
@@ -85,9 +89,9 @@ async function processTelegramJob(job) {
       await reply("Файл не скачался. Бот получает вложения до 20 МБ.");
       if (!message.text) throw error;
     }
-    const answer = topic.project && url
-      ? await runListing(message, key, topic, url, job)
-      : await runQueued(message, key, promptFor(message, topic), cwd, topic, job);
+    const answer = taskTopic.project && url
+      ? await runListing(message, key, taskTopic, url, job)
+      : await runQueued(message, key, promptFor(message, taskTopic), cwd, taskTopic, job);
     await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
   } catch (error) {
     console.error("job failed", error.message);
@@ -101,7 +105,7 @@ const jobs = startTelegramJobs({
   processJob: processTelegramJob,
   notifyInterrupted: (message) => sendMessage(
     message.chatId,
-    "Обработка прервалась из-за перезапуска бота. Пожалуйста, отправь сообщение ещё раз.",
+    "Обработка прерывалась несколько раз. Не удалось завершить задачу автоматически; пожалуйста, отправь её ещё раз.",
     message.threadId,
     message.messageId,
   ),

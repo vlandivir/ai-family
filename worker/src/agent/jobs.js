@@ -2,6 +2,37 @@ import { dbGet, dbPatch } from "../db.js";
 import { createScheduler } from "./scheduler.js";
 
 const maxConcurrent = Number(process.env.MAX_CONCURRENT_AGENTS || 3);
+const maxAttempts = 3;
+
+export async function recoverInterruptedJobs({ get = dbGet, patch = dbPatch, notifyInterrupted }) {
+  const jobs = await get("agent_jobs?source=eq.telegram&status=eq.running&select=id,payload,attempts&limit=1000");
+  for (const job of jobs) {
+    if ((job.attempts || 0) < maxAttempts && job.payload?.sessionKey) {
+      await patch(`agent_jobs?id=eq.${job.id}&status=eq.running`, {
+        status: "queued",
+        started_at: null,
+        finished_at: null,
+        error: null,
+      });
+    } else {
+      await patch(`agent_jobs?id=eq.${job.id}&status=eq.running`, {
+        status: "failed",
+        finished_at: new Date().toISOString(),
+        error: job.payload?.sessionKey
+          ? "Обработка прерывалась после нескольких запусков воркера"
+          : "Не найден контекст задачи для восстановления",
+      });
+      const message = job.payload?.message;
+      if (message) {
+        try {
+          await notifyInterrupted(message);
+        } catch (error) {
+          console.error("telegram interrupted notice", error.message);
+        }
+      }
+    }
+  }
+}
 
 export function startTelegramJobs({ processJob, notifyInterrupted }) {
   const scheduler = createScheduler(maxConcurrent);
@@ -46,31 +77,7 @@ export function startTelegramJobs({ processJob, notifyInterrupted }) {
     }
   }
 
-  async function recoverInterrupted() {
-    try {
-      const jobs = await dbGet("agent_jobs?source=eq.telegram&status=eq.running&select=id,payload&limit=1000");
-      for (const job of jobs) {
-        if (!job.payload?.sessionKey) continue;
-        await dbPatch(`agent_jobs?id=eq.${job.id}&status=eq.running`, {
-          status: "failed",
-          finished_at: new Date().toISOString(),
-          error: "Воркер перезапустился во время обработки",
-        });
-        const message = job.payload?.message;
-        if (message) {
-          try {
-            await notifyInterrupted(message);
-          } catch (error) {
-            console.error("telegram interrupted notice", error.message);
-          }
-        }
-      }
-    } catch (error) {
-      console.error("telegram recovery", error.message);
-    }
-  }
-
-  const ready = recoverInterrupted().then(check);
+  const ready = recoverInterruptedJobs({ notifyInterrupted }).then(check);
   const timer = setInterval(() => void check(), 1000);
   timer.unref?.();
   return { ready, wake: check };
