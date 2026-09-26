@@ -9,10 +9,10 @@ const askpass = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/git
 const agentBin = process.env.AGENT_BIN || "/root/.local/bin/agent";
 const workspace = process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace";
 
-let busy = false;
+const active = new Set();
 
-export function agentBusy() {
-  return busy;
+export function agentBusy(key) {
+  return key == null ? active.size > 0 : active.has(key);
 }
 
 function run(args, cwd = workspace) {
@@ -79,10 +79,10 @@ async function createChat(userId, cwd) {
 }
 
 export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
-  if (busy) {
+  if (active.has(userId)) {
     return Promise.reject(new Error("busy"));
   }
-  busy = true;
+  active.add(userId);
   await chmod(askpass, 0o700).catch(() => {});
   try {
     let chatId = cursorChatId || (await getChatId(userId));
@@ -113,6 +113,6 @@ export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
       }
     }
   } finally {
-    busy = false;
+    active.delete(userId);
   }
 }

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { chmod } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -21,8 +22,11 @@ function safeError(error) {
     .slice(0, 500);
 }
 
-export async function ensureRepo(repo) {
-  const dir = `${repoRoot}/${repo.split("/")[1]}`;
+export async function ensureRepo(repo, sessionKey) {
+  const name = repo.split("/")[1];
+  const dir = sessionKey
+    ? join(repoRoot, "contexts", name, createHash("sha256").update(sessionKey).digest("hex").slice(0, 16))
+    : join(repoRoot, name);
   const askpass = join(dirname(fileURLToPath(import.meta.url)), "../scripts/git-askpass.sh");
   await chmod(askpass, 0o700);
   const env = {
@@ -34,6 +38,7 @@ export async function ensureRepo(repo) {
   try {
     await runGit(["-C", dir, "rev-parse", "--is-inside-work-tree"]);
   } catch {
+    await mkdir(dirname(dir), { recursive: true });
     await runGit(["clone", `https://github.com/${repo}.git`, dir]);
     return dir;
   }
@@ -90,6 +95,7 @@ async function upsertListingFromCard(project, url, card, prose) {
   const known = await dbGet(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
   const match = known.find((item) => item.id === card?.match_id);
   const row = listingRow(project.id, url, card, prose);
+  const banned = districtExclusion(row.address, row.neighborhood);
   if (Array.isArray(card?.source_urls) && card.source_urls.length) {
     row.source_urls = [...new Set([...card.source_urls, url].filter(Boolean))];
   }
@@ -99,7 +105,7 @@ async function upsertListingFromCard(project, url, card, prose) {
       url,
     );
     delete row.project_id;
-    delete row.status;
+    if (!banned) delete row.status;
     if (row.details) {
       const current = await dbGet(`listings?id=eq.${match.id}&select=details`);
       row.details = { ...(current[0]?.details || {}), ...row.details };
@@ -111,7 +117,7 @@ async function upsertListingFromCard(project, url, card, prose) {
   }
 }
 
-async function openConversation(message, sessionKey) {
+export async function openConversation(message, sessionKey) {
   if (message.inGroup) {
     const topicId = message.threadId ?? 1;
     const found = await dbGet(
@@ -141,9 +147,9 @@ async function openConversation(message, sessionKey) {
   return created[0];
 }
 
-export async function runQueued(message, sessionKey, prompt, cwd, topic = {}) {
+export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, queuedJob) {
   const conversation = await openConversation(message, sessionKey);
-  const inserted = await dbInsert("agent_jobs", {
+  const inserted = queuedJob ? [queuedJob] : await dbInsert("agent_jobs", {
     conversation_id: conversation.id,
     source: "telegram",
     external_user_id: message.userId,
@@ -188,10 +194,10 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}) {
   }
 }
 
-export async function runListing(message, sessionKey, topic, url) {
+export async function runListing(message, sessionKey, topic, url, queuedJob) {
   const conversation = await openConversation(message, sessionKey);
   const project = (await dbGet(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0];
-  const dir = await ensureRepo(topic.repo);
+  const dir = await ensureRepo(topic.repo, sessionKey);
   const prompt = [
     topic.rule,
     `Ссылка: ${url}`,
@@ -207,13 +213,14 @@ export async function runListing(message, sessionKey, topic, url) {
     "Уже известные карточки:",
     await knownListings(project.id),
     "Если это уже известный объект, поставь его id в match_id. Иначе match_id оставь null.",
+    "Borča, Mirijevo и блоки 71–72 не причина пропускать объявление. Карточку всё равно заполни, район напиши в neighborhood.",
     message.filePaths?.length ? `К сообщению приложены файлы. Прочитай их вместе со страницей:\n${message.filePaths.map((path) => `- ${path}`).join("\n")}` : "",
     "В конце добавь блок ровно в таком виде:",
     "<<<JSON>>>",
     '{"is_listing":true,"category":"rental","match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
     "<<<END>>>",
   ].join("\n");
-  const inserted = await dbInsert("agent_jobs", {
+  const inserted = queuedJob ? [queuedJob] : await dbInsert("agent_jobs", {
     conversation_id: conversation.id,
     project_id: project?.id,
     source: "telegram",
@@ -243,10 +250,16 @@ export async function runListing(message, sessionKey, topic, url) {
     const known = await dbGet(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
     const match = known.find((item) => item.id === card?.match_id);
     const row = listingRow(project.id, url, card, prose);
+    const banned = districtExclusion(row.address, row.neighborhood);
+    if (banned) {
+      row.status = "excluded";
+      row.fit = `Исключён: ${banned}`;
+      row.notes = [`Район ${banned} исключён с 21 сентября 2026. Карточка остаётся в списке.`, row.notes].filter(Boolean).join("\n");
+    }
     if (match) {
       row.source_urls = mergeUrls(match, url);
       delete row.project_id;
-      delete row.status;
+      if (!banned) delete row.status;
       if (row.details) {
         const current = await dbGet(`listings?id=eq.${match.id}&select=details`);
         row.details = { ...(current[0]?.details || {}), ...row.details };
@@ -306,9 +319,10 @@ function mergeUrls(match, url) {
 }
 
 function listingRow(projectId, url, card, prose) {
+  const banned = districtExclusion(card?.address, card?.neighborhood);
   return {
     project_id: projectId,
-    status: "new",
+    status: banned ? "excluded" : "new",
     city: "Belgrade",
     neighborhood: card?.neighborhood || null,
     address: card?.address || null,
@@ -319,10 +333,25 @@ function listingRow(projectId, url, card, prose) {
     floor: numberOrNull(card?.floor),
     year_built: numberOrNull(card?.year_built),
     heating: card?.heating || null,
-    notes: card?.notes || prose || null,
-    fit: card?.fit || null,
+    notes: banned
+      ? [`Район ${banned} исключён с 21 сентября 2026. Карточка остаётся в списке.`, card?.notes || prose].filter(Boolean).join("\n")
+      : (card?.notes || prose || null),
+    fit: banned ? `Исключён: ${banned}` : (card?.fit || null),
     details: categoryOf(card) ? { category: categoryOf(card) } : {},
   };
+}
+
+const excludedDistricts = [
+  [/bor[cč]a|борча/i, "Borča"],
+  [/mirijevo|миријево/i, "Mirijevo"],
+  [/blok(?:\s|-)*71\b|блок(?:\s|-)*71\b/i, "блок 71"],
+  [/blok(?:\s|-)*72\b|блок(?:\s|-)*72\b/i, "блок 72"],
+];
+
+export function districtExclusion(address, neighborhood) {
+  const text = `${address || ""} ${neighborhood || ""}`;
+  const found = excludedDistricts.find(([pattern]) => pattern.test(text));
+  return found ? found[1] : null;
 }
 
 const categories = new Set(["rental", "living", "houses", "newbuild"]);

@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentBusy } from "./agent/run.js";
 import { ensureRepo, listingUrl, runListing, runQueued } from "./queue.js";
+import { startScan } from "./scan.js";
 import { downloadTelegramFile, poll, sendAnswer, sendMessage } from "./telegram/poll.js";
 
 const topicsPath = join(dirname(fileURLToPath(import.meta.url)), "../config/topics.json");
@@ -46,6 +47,8 @@ async function saveFiles(message, cwd) {
   }
   return paths;
 }
+
+startScan({ busy: agentBusy });
 
 await poll(async (message) => {
   const reply = (text) => sendMessage(message.chatId, text, message.threadId);

@@ -127,17 +127,20 @@ export function toTelegramHtml(text) {
   return chunks.join("\n");
 }
 
-async function sendPhoto(chatId, png, threadId) {
+async function sendPhoto(chatId, png, threadId, replyToMessageId) {
   const form = new FormData();
   form.set("chat_id", String(chatId));
   if (threadId != null) form.set("message_thread_id", String(threadId));
+  if (replyToMessageId != null) {
+    form.set("reply_parameters", JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }));
+  }
   form.set("photo", new Blob([png], { type: "image/png" }), "table.png");
   const response = await fetch(`${api}/bot${token()}/sendPhoto`, { method: "POST", body: form });
   const payload = await response.json();
   if (!payload.ok) throw new Error(payload.description || "sendPhoto");
 }
 
-export async function sendAnswer(chatId, text, threadId) {
+export async function sendAnswer(chatId, text, threadId, replyToMessageId) {
   const lines = (text || "").split("\n");
   let index = 0;
   let sent = false;
@@ -147,7 +150,7 @@ export async function sendAnswer(chatId, text, threadId) {
       while (index < lines.length && !isTableRow(lines[index])) index += 1;
       const chunk = lines.slice(start, index).join("\n").trim();
       if (chunk) {
-        await sendMessage(chatId, chunk, threadId);
+        await sendMessage(chatId, chunk, threadId, replyToMessageId);
         sent = true;
       }
       continue;
@@ -155,17 +158,17 @@ export async function sendAnswer(chatId, text, threadId) {
     const start = index;
     while (index < lines.length && (isTableRow(lines[index]) || isSeparator(lines[index]))) index += 1;
     try {
-      await sendPhoto(chatId, await renderTable(parseTable(lines.slice(start, index))), threadId);
+      await sendPhoto(chatId, await renderTable(parseTable(lines.slice(start, index))), threadId, replyToMessageId);
     } catch (error) {
       console.error("table image", error.message);
-      await sendMessage(chatId, lines.slice(start, index).join("\n"), threadId);
+      await sendMessage(chatId, lines.slice(start, index).join("\n"), threadId, replyToMessageId);
     }
     sent = true;
   }
-  if (!sent) await sendMessage(chatId, text, threadId);
+  if (!sent) await sendMessage(chatId, text, threadId, replyToMessageId);
 }
 
-export function sendMessage(chatId, text, threadId) {
+export function sendMessage(chatId, text, threadId, replyToMessageId) {
   const chunks = [];
   let rest = text || "пусто";
   while (rest.length > 0) {
@@ -173,6 +176,9 @@ export function sendMessage(chatId, text, threadId) {
     rest = rest.slice(4000);
   }
   const thread = threadId == null ? {} : { message_thread_id: threadId };
+  const reply = replyToMessageId == null ? {} : {
+    reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
+  };
   return chunks.reduce(async (chain, chunk) => {
     await chain;
     try {
@@ -181,9 +187,14 @@ export function sendMessage(chatId, text, threadId) {
         text: toTelegramHtml(chunk),
         parse_mode: "HTML",
         ...thread,
+        ...reply,
       });
     } catch {
-      await call("sendMessage", { chat_id: chatId, text: chunk, ...thread });
+      try {
+        await call("sendMessage", { chat_id: chatId, text: chunk, ...thread, ...reply });
+      } catch {
+        await call("sendMessage", { chat_id: chatId, text: chunk, ...thread });
+      }
     }
   }, Promise.resolve());
 }
@@ -252,6 +263,8 @@ export async function poll(onText) {
       }
       const name = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ");
       const incoming = {
+        updateId: update.update_id,
+        messageId: message.message_id,
         chatId: message.chat.id,
         userId,
         text,
