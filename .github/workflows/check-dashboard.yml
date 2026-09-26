@@ -1,0 +1,36 @@
+name: Check status dashboard
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'dashboard/**'
+      - '.github/workflows/check-dashboard.yml'
+  pull_request:
+    paths:
+      - 'dashboard/**'
+      - '.github/workflows/check-dashboard.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci --prefix dashboard --ignore-scripts
+      - name: Build dashboard with test configuration
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: test
+          SUPABASE_SERVICE_ROLE_KEY: test
+          ALLOWED_EMAILS: test@example.com
+        run: npm run build --prefix dashboard

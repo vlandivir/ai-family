@@ -7,20 +7,57 @@ on:
     paths:
       - 'worker/**'
       - 'scripts/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    paths:
+      - 'worker/**'
+      - 'scripts/**'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install worker dependencies
+        run: npm ci --prefix worker --ignore-scripts
+      - name: Test worker
+        run: node --test worker/test/*.test.js
+      - name: Check deployment script and imports
+        run: |
+          bash -n scripts/deploy.sh
+          node --input-type=module -e "await import('./worker/src/storage.js')"
+
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ai-family-worker-production
+      cancel-in-progress: false
     steps:
       - name: Update the worker over SSH
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy
           chmod 600 ~/.ssh/deploy
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes "root@${HOST}"
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "root@${HOST}" "deploy ${DEPLOY_SHA}"

@@ -21,6 +21,8 @@ HETZNER_S3_ACCESS_KEY=
 HETZNER_S3_SECRET_KEY=
 ```
 
+Пуш изменений `dashboard/` запускает сборку с тестовыми значениями окружения в GitHub Actions. Production-версия сайта статусов пока выкладывается вручную из этого репозитория; Vercel Git Integration для проекта ещё не подключена.
+
 `ALLOWED_EMAILS` — адреса через запятую. Пустой список закрывает доступ всем. Ключ `SUPABASE_SERVICE_ROLE_KEY` используется только на сервере. Google OAuth должен быть настроен в Supabase Auth с callback `https://<supabase-project>.supabase.co/auth/v1/callback`; в Supabase URL Configuration разрешите `https://<site>/auth/callback`.
 
 ```sh
