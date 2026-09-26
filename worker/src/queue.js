@@ -129,6 +129,8 @@ export async function runListing(message, sessionKey, topic, url) {
     "Витрина, каталог, поиск, статья и наша собственная страница — не объявление.",
     "Если это не объявление, ответь по смыслу и закончи блоком {\"is_listing\":false}. Карточку не заполняй.",
     "Если это объявление, ответь коротко, насколько квартира подходит.",
+    "Поставь category ровно одним из значений: rental, living, houses, newbuild.",
+    "rental — квартира под сдачу. living — квартира для жизни семьи. houses — дом. newbuild — новостройка или проект со сдачей в будущем.",
     "Один и тот же объект объединяй, даже если ссылка отличается параметрами.",
     "Сверяй адрес, дом, площадь и площадку, не полную строку URL.",
     "Уже известные карточки:",
@@ -137,7 +139,7 @@ export async function runListing(message, sessionKey, topic, url) {
     message.filePaths?.length ? `К сообщению приложены файлы. Прочитай их вместе со страницей:\n${message.filePaths.map((path) => `- ${path}`).join("\n")}` : "",
     "В конце добавь блок ровно в таком виде:",
     "<<<JSON>>>",
-    '{"is_listing":true,"match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
+    '{"is_listing":true,"category":"rental","match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
     "<<<END>>>",
   ].join("\n");
   const inserted = await dbInsert("agent_jobs", {
@@ -174,6 +176,10 @@ export async function runListing(message, sessionKey, topic, url) {
       row.source_urls = mergeUrls(match, url);
       delete row.project_id;
       delete row.status;
+      if (row.details) {
+        const current = await dbGet(`listings?id=eq.${match.id}&select=details`);
+        row.details = { ...(current[0]?.details || {}), ...row.details };
+      }
       await dbPatch(`listings?id=eq.${match.id}`, row);
     } else {
       row.source_urls = [url];
@@ -244,7 +250,15 @@ function listingRow(projectId, url, card, prose) {
     heating: card?.heating || null,
     notes: card?.notes || prose || null,
     fit: card?.fit || null,
+    details: categoryOf(card) ? { category: categoryOf(card) } : {},
   };
+}
+
+const categories = new Set(["rental", "living", "houses", "newbuild"]);
+
+function categoryOf(card) {
+  const value = String(card?.category || "").trim();
+  return categories.has(value) ? value : null;
 }
 
 function numberOrNull(value) {
