@@ -3,5 +3,6 @@
 *.pem
 credentials.json
 dashboard/node_modules/
+worker/node_modules/
 dashboard/.next/
 dashboard/.vercel/

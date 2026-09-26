@@ -7,6 +7,7 @@ echo "=== $(date -Is) deploy ==="
 cd /opt/ai-family
 git fetch origin main
 git reset --hard origin/main
+npm ci --prefix worker --omit=dev --ignore-scripts
 install -m 755 scripts/deploy.sh /usr/local/sbin/ai-family-deploy.sh
 if [ -f scripts/install-agent-config.sh ]; then
   bash scripts/install-agent-config.sh

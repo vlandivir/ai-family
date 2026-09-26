@@ -4,10 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startTelegramJobs } from "./agent/jobs.js";
 import { agentBusy } from "./agent/run.js";
-import { dbInsert } from "./db.js";
+import { dbInsert, dbPatch } from "./db.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
-import { downloadTelegramFile, poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
+import { archiveAttachments, materializeObject, safeFileName } from "./storage.js";
+import { poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
 
 const topicsPath = join(dirname(fileURLToPath(import.meta.url)), "../config/topics.json");
 const topics = JSON.parse(await readFile(topicsPath, "utf8"));
@@ -37,23 +38,33 @@ function jobIdFor(message) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-function fileNote(paths) {
-  if (!paths?.length) return "";
-  return `\n\nК сообщению приложены файлы. Прочитай их и учти в ответе:\n${paths.map((path) => `- ${path}`).join("\n")}`;
+function mediaNote(message) {
+  const parts = [];
+  if (message.filePaths?.length) {
+    parts.push(`К сообщению приложены файлы. Прочитай их и учти в ответе:\n${message.filePaths.map((path) => `- ${path}`).join("\n")}`);
+  }
+  if (message.location) {
+    const { latitude, longitude, title, address } = message.location;
+    parts.push(`Геометка: ${latitude}, ${longitude}${title ? `; ${title}` : ""}${address ? `; ${address}` : ""}. Учти координаты в ответе.`);
+  }
+  if (message.unavailableFiles?.length) {
+    parts.push(`Эти вложения Telegram не дал скачать из-за лимита 20 МБ: ${message.unavailableFiles.join(", ")}. Явно скажи об этом в ответе; не утверждай, что просмотрел их.`);
+  }
+  return parts.length ? `\n\n${parts.join("\n\n")}` : "";
 }
 
 function promptFor(message, topic) {
   const body = message.inGroup ? `${message.senderName}: ${message.text}` : message.text;
   const prompt = topic.rule ? `${topic.rule}\n\n${body}` : body;
-  return `${prompt}${fileNote(message.filePaths)}`;
+  return `${prompt}${mediaNote(message)}`;
 }
 
-async function saveFiles(message, cwd) {
+async function saveFiles(artifacts, jobId, cwd) {
   const dir = join(cwd || process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace", "inbox");
   const paths = [];
-  for (const [index, file] of (message.files || []).entries()) {
-    const dest = join(dir, `${Date.now()}-${index}-${file.name}`);
-    await downloadTelegramFile(file.id, dest);
+  for (const file of artifacts.filter((item) => item.status === "stored" && item.kind !== "location")) {
+    const dest = join(dir, jobId, `${file.sourceIndex}-${safeFileName(file.name)}`);
+    await materializeObject(file.objectKey, dest);
     paths.push(dest);
   }
   return paths;
@@ -81,14 +92,18 @@ async function processTelegramJob(job) {
     } catch (error) {
       console.error("telegram working reaction", error.message);
     }
-    const cwd = topic.repo ? await ensureRepo(topic.repo, key) : await workspaceFor(key);
+    let artifacts;
     try {
-      message.filePaths = await saveFiles(message, cwd);
+      artifacts = await archiveAttachments(message, job.id, job.artifacts);
+      if (message.files?.length || message.location) {
+        await dbPatch(`agent_jobs?id=eq.${job.id}`, { artifacts });
+      }
     } catch (error) {
-      console.error("telegram file", error.message);
-      await reply("Файл не скачался. Бот получает вложения до 20 МБ.");
-      if (!message.text) throw error;
+      throw new Error(`Не удалось сохранить вложение в Hetzner Storage: ${error.message}`);
     }
+    const cwd = topic.repo ? await ensureRepo(topic.repo, key) : await workspaceFor(key);
+    message.filePaths = await saveFiles(artifacts, job.id, cwd);
+    message.unavailableFiles = artifacts.filter((item) => item.status === "unavailable").map((item) => item.name);
     const answer = taskTopic.project && url
       ? await runListing(message, key, taskTopic, url, job)
       : await runQueued(message, key, promptFor(message, taskTopic), cwd, taskTopic, job);

@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const api = "https://api.telegram.org";
+export const telegramDownloadLimit = 20 * 1024 * 1024;
 
 function allowedIds() {
   return new Set(
@@ -208,31 +208,46 @@ export function sendMessage(chatId, text, threadId, replyToMessageId) {
   }, Promise.resolve());
 }
 
-function namedFile(file, fallback) {
+function namedFile(file, fallback, kind, mimeType) {
   const name = file?.file_name || fallback;
   return {
     id: file.file_id,
+    uniqueId: file.file_unique_id || null,
     name: name.replace(/[^\w.\-]+/g, "_").slice(0, 80) || fallback,
+    kind,
+    mimeType: file.mime_type || mimeType,
+    size: file.file_size ?? null,
   };
 }
 
-function attachments(message) {
+export function attachments(message) {
   const files = [];
-  if (message.document) files.push(namedFile(message.document, "file"));
-  if (message.photo?.length) files.push(namedFile(message.photo.at(-1), "photo.jpg"));
-  if (message.video) files.push(namedFile(message.video, "video.mp4"));
-  if (message.audio) files.push(namedFile(message.audio, "audio"));
-  if (message.voice) files.push(namedFile(message.voice, "voice.ogg"));
-  if (message.animation) files.push(namedFile(message.animation, "animation.mp4"));
+  if (message.document) files.push(namedFile(message.document, "file", "document", "application/octet-stream"));
+  if (message.photo?.length) files.push(namedFile(message.photo.at(-1), "photo.jpg", "photo", "image/jpeg"));
+  if (message.video) files.push(namedFile(message.video, "video.mp4", "video", "video/mp4"));
+  if (message.video_note) files.push(namedFile(message.video_note, "video-note.mp4", "video", "video/mp4"));
+  if (message.audio) files.push(namedFile(message.audio, "audio", "audio", "audio/mpeg"));
+  if (message.voice) files.push(namedFile(message.voice, "voice.ogg", "audio", "audio/ogg"));
+  if (message.animation) files.push(namedFile(message.animation, "animation.mp4", "video", "video/mp4"));
   return files;
 }
 
-export async function downloadTelegramFile(fileId, dest) {
+export function messageContent(message) {
+  return {
+    text: message.text || message.caption || "",
+    files: attachments(message),
+    location: message.location || message.venue?.location || null,
+  };
+}
+
+export async function downloadTelegramFile(fileId) {
   const info = await call("getFile", { file_id: fileId });
+  if (info.file_size > telegramDownloadLimit) throw new Error("telegram file exceeds 20 MB download limit");
   const response = await fetch(`${api}/file/bot${token()}/${info.file_path}`);
   if (!response.ok) throw new Error("file download failed");
-  await mkdir(dirname(dest), { recursive: true });
-  await writeFile(dest, Buffer.from(await response.arrayBuffer()));
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > telegramDownloadLimit) throw new Error("telegram file exceeds 20 MB download limit");
+  return bytes;
 }
 
 export async function poll(onText) {
@@ -254,9 +269,8 @@ export async function poll(onText) {
         nextOffset = update.update_id + 1;
         const message = update.message;
         if (!message || message.from?.is_bot) continue;
-        const text = message.text || message.caption || "";
-        const files = attachments(message);
-        if (!text && !files.length) continue;
+        const { text, files, location } = messageContent(message);
+        if (!text && !files.length && !location) continue;
         const chatType = message.chat?.type;
         const userId = String(message.from.id);
         const inGroup = chatType === "group" || chatType === "supergroup";
@@ -273,6 +287,15 @@ export async function poll(onText) {
           userId,
           text,
           files,
+          location: location ? {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            horizontalAccuracy: location.horizontal_accuracy ?? null,
+            livePeriod: location.live_period ?? null,
+            heading: location.heading ?? null,
+            address: message.venue?.address || null,
+            title: message.venue?.title || null,
+          } : null,
           threadId: message.message_thread_id ?? null,
           inGroup,
           senderName: name || message.from.username || userId,

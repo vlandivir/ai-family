@@ -1,5 +1,6 @@
 import { allowedUser } from "@/lib/access";
 import { dashboardData } from "@/lib/data";
+import type { Artifact } from "@/lib/data";
 import { ChatScroll } from "./chat-scroll";
 import { Refresh } from "./refresh";
 
@@ -25,11 +26,29 @@ function content(text: string) {
   );
 }
 
+function attachment(jobId: string, artifact: Artifact, index: number, mediaReady: boolean) {
+  if (artifact.kind === "location" && artifact.latitude != null && artifact.longitude != null) {
+    const url = `https://www.openstreetmap.org/?mlat=${artifact.latitude}&mlon=${artifact.longitude}#map=16/${artifact.latitude}/${artifact.longitude}`;
+    return <a className="attachment-card" href={url} target="_blank" rel="noopener noreferrer" key={index}>📍 {artifact.title || artifact.address || "Открыть геометку"}<small>{artifact.latitude}, {artifact.longitude}</small></a>;
+  }
+  if (artifact.status === "unavailable") {
+    return <div className="attachment-card unavailable" key={index}>⚠ {artifact.name || "Файл"}<small>Telegram не дал скачать файл больше 20 МБ</small></div>;
+  }
+  if (artifact.status !== "stored" || !artifact.objectKey) return null;
+  if (!mediaReady) return <div className="attachment-card" key={index}>📎 {artifact.name || "Файл"}<small>Сохранено в Hetzner Storage</small></div>;
+  const url = `/api/attachments/${jobId}/${index}`;
+  if (artifact.kind === "photo") return <a className="attachment-card photo" href={url} target="_blank" rel="noopener noreferrer" key={index}><img src={url} alt={artifact.name || "Фото"} loading="lazy" />{artifact.name || "Фото"}</a>;
+  if (artifact.kind === "video") return <div className="attachment-card" key={index}><video src={url} controls preload="none" />{artifact.name || "Видео"}</div>;
+  return <a className="attachment-card" href={url} target="_blank" rel="noopener noreferrer" key={index}>📎 {artifact.name || "Скачать файл"}<small>{artifact.size != null ? `${Math.ceil(artifact.size / 1024)} КБ` : "Файл"}</small></a>;
+}
+
 export default async function Home({ searchParams }: { searchParams: Promise<{ chat?: string }> }) {
   const user = await allowedUser();
   if (!user) return <main className="gate"><div className="gate-card"><div className="brand-mark">◈</div><p className="eyebrow">AI FAMILY / МОНИТОРИНГ</p><h1>Работа семьи<br />в одном месте.</h1><p className="gate-desc">Войдите через разрешённый Google аккаунт, чтобы видеть состояние всех задач и диалогов.</p><a className="google-button" href="/auth/login"><span className="google-g">G</span> Войти через Google <span aria-hidden>↗</span></a><p className="gate-note">Доступ есть только у адресов из настроек.</p></div></main>;
 
   const { branches, totalJobs, updatedAt } = await dashboardData();
+  const mediaReady = Boolean(process.env.HETZNER_S3_ENDPOINT && process.env.HETZNER_S3_BUCKET &&
+    process.env.HETZNER_S3_ACCESS_KEY && process.env.HETZNER_S3_SECRET_KEY);
   const { chat } = await searchParams;
   const selected = branches.find((branch) => branch.id === chat) || branches[0];
   const running = branches.filter((branch) => branch.state === "running").length;
@@ -56,10 +75,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
         {selected ? <><div className="conversation-head"><span className="dialogue-avatar large">{selected.kind === "private" ? "↗" : "⌘"}</span><div><h2>{branchTitle(selected)}</h2><p>{selected.kind === "private" ? "Личный диалог" : `Семейный чат · тема ${selected.telegram_topic_id}`}</p></div><span className={`badge ${selected.state}`}>{labels[selected.state] || selected.state}</span></div>
           <ChatScroll conversationId={selected.id} lastActivity={`${selected.latest?.id || ""}:${selected.latest?.status || ""}:${selected.latest?.finished_at || ""}`}>
             <div className="chat-timeline">{[...selected.jobs].reverse().map((job) => {
-              const incoming = job.payload?.message?.text || job.payload?.text || (job.payload?.message?.files?.length ? "Вложение" : "Сообщение без текста");
+              const location = job.payload?.message?.location;
+              const incoming = job.payload?.message?.text || job.payload?.text || (job.payload?.message?.files?.length ? "Вложение" : location ? "Геометка" : "Сообщение без текста");
               const sender = job.payload?.message?.senderName || (selected.kind === "private" ? "Вы" : "Участник");
               return <div className="exchange" key={job.id}>
-                <div className="message incoming"><div className="message-meta"><strong>{sender}</strong><time>{time(job.created_at)}</time></div><div className="message-text">{content(incoming)}</div></div>
+                <div className="message incoming"><div className="message-meta"><strong>{sender}</strong><time>{time(job.created_at)}</time></div><div className="message-text">{content(incoming)}</div>{job.artifacts?.length ? <div className="attachments">{job.artifacts.map((item, index) => attachment(job.id, item, index, mediaReady))}</div> : null}</div>
                 {job.result?.text && <div className="message outgoing"><div className="message-meta"><strong>Бот</strong><time>{time(job.finished_at)}</time></div><div className="message-text">{content(job.result.text)}</div></div>}
                 {job.status !== "succeeded" && <div className={`processing-note ${job.status}`}><span className={`status-dot ${job.status}`} />{job.status === "failed" ? `Ошибка: ${job.error || "обработка не завершилась"}` : job.status === "running" ? "Бот обрабатывает сообщение" : labels[job.status] || job.status}{job.attempts > 1 && ` · попытка ${job.attempts}`}</div>}
               </div>;

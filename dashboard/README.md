@@ -4,6 +4,8 @@
 
 Текст ответа сохраняется в `agent_jobs.result.text`. Наличие текста в базе не подтверждает доставку в Telegram: идентификаторы отправленных сообщений пока не записываются.
 
+Вложения входящих сообщений хранятся в закрытом Hetzner Object Storage; ключи объектов записаны в `agent_jobs.artifacts`. Сайт выдаёт авторизованному посетителю краткоживущую ссылку для просмотра фото, видео и файлов. Геометки показываются ссылкой на карту.
+
 Корень проекта Vercel: `dashboard`. Для локальной разработки скопируйте нужные значения из игнорируемого корневого `.env` в игнорируемый `dashboard/.env.local` и добавьте публичный ключ Supabase:
 
 ```text
@@ -11,6 +13,10 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 ALLOWED_EMAILS=
+HETZNER_S3_ENDPOINT=
+HETZNER_S3_BUCKET=
+HETZNER_S3_ACCESS_KEY=
+HETZNER_S3_SECRET_KEY=
 ```
 
 `ALLOWED_EMAILS` — адреса через запятую. Пустой список закрывает доступ всем. Ключ `SUPABASE_SERVICE_ROLE_KEY` используется только на сервере. Google OAuth должен быть настроен в Supabase Auth с callback `https://<supabase-project>.supabase.co/auth/v1/callback`; в Supabase URL Configuration разрешите `https://<site>/auth/callback`.

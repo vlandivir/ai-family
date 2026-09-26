@@ -39,6 +39,11 @@
 .message-meta strong{font-size:10px;color:#4c755f}.message-meta time{font-size:9px;color:#90a398}
 .message-text{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
 .message-text a{color:#176b67;text-decoration:underline;text-underline-offset:2px}
+.attachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.attachment-card{display:flex;flex-direction:column;gap:4px;max-width:320px;padding:8px 10px;border:1px solid #dce9df;border-radius:9px;background:#f6faf6;color:#176b67;font-size:11px;text-decoration:none;overflow-wrap:anywhere}
+.attachment-card small{font-size:10px;color:#81958a}.attachment-card.unavailable{color:#a45b4c}
+.attachment-card img,.attachment-card video{display:block;width:100%;max-height:240px;object-fit:contain;border-radius:5px;background:#e9efe9}
+.attachment-card.photo{width:min(260px,100%)}
 .processing-note{align-self:flex-end;max-width:82%;display:flex;align-items:center;gap:7px;color:#61786a;font-size:10px;padding:5px 9px}
 .processing-note.failed{color:#aa5551}.processing-note.queued{color:#ad7435}
 .conversation-foot{flex:none;border-top:1px solid var(--line);background:#fff;padding:13px 20px;color:#98a99b;font-size:10px;text-align:center}
