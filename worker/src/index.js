@@ -71,7 +71,7 @@ await poll(async (message) => {
     const url = listingUrl(message.text);
     const answer = topic.project && url
       ? await runListing(message, sessionKey(message), topic, url)
-      : await runQueued(message, sessionKey(message), promptFor(message, topic), cwd);
+      : await runQueued(message, sessionKey(message), promptFor(message, topic), cwd, topic);
     await sendAnswer(message.chatId, answer, message.threadId);
   } catch (error) {
     console.error("job failed", error.message);

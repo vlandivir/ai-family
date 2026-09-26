@@ -57,6 +57,60 @@ function cardFromAnswer(answer) {
   return { prose: answer.replace(match[0], "").trim(), card };
 }
 
+function cardsFromAnswer(answer) {
+  const cards = [];
+  let prose = answer;
+  const re = /<<<JSON>>>([\s\S]*?)<<<END>>>/g;
+  let match;
+  while ((match = re.exec(answer))) {
+    try {
+      cards.push(JSON.parse(match[1]));
+    } catch {
+      // skip invalid JSON blocks
+    }
+    prose = prose.replace(match[0], "");
+  }
+  return { prose: prose.trim(), cards };
+}
+
+function shouldUpsertListing(card) {
+  if (!card || typeof card !== "object") return false;
+  if (card.is_listing === false) return false;
+  if (card.is_listing === true) return true;
+  return Boolean(categoryOf(card));
+}
+
+function listingUrlFromCard(card) {
+  if (card?.source_url) return String(card.source_url);
+  if (Array.isArray(card?.source_urls) && card.source_urls[0]) return String(card.source_urls[0]);
+  return null;
+}
+
+async function upsertListingFromCard(project, url, card, prose) {
+  const known = await dbGet(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
+  const match = known.find((item) => item.id === card?.match_id);
+  const row = listingRow(project.id, url, card, prose);
+  if (Array.isArray(card?.source_urls) && card.source_urls.length) {
+    row.source_urls = [...new Set([...card.source_urls, url].filter(Boolean))];
+  }
+  if (match) {
+    row.source_urls = mergeUrls(
+      { ...match, source_urls: row.source_urls || match.source_urls },
+      url,
+    );
+    delete row.project_id;
+    delete row.status;
+    if (row.details) {
+      const current = await dbGet(`listings?id=eq.${match.id}&select=details`);
+      row.details = { ...(current[0]?.details || {}), ...row.details };
+    }
+    await dbPatch(`listings?id=eq.${match.id}`, row);
+  } else {
+    if (!row.source_urls) row.source_urls = [url];
+    await dbInsert("listings", row);
+  }
+}
+
 async function openConversation(message, sessionKey) {
   if (message.inGroup) {
     const topicId = message.threadId ?? 1;
@@ -87,7 +141,7 @@ async function openConversation(message, sessionKey) {
   return created[0];
 }
 
-export async function runQueued(message, sessionKey, prompt, cwd) {
+export async function runQueued(message, sessionKey, prompt, cwd, topic = {}) {
   const conversation = await openConversation(message, sessionKey);
   const inserted = await dbInsert("agent_jobs", {
     conversation_id: conversation.id,
@@ -105,13 +159,24 @@ export async function runQueued(message, sessionKey, prompt, cwd) {
     if (chatId && chatId !== conversation.cursor_chat_id) {
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
+    const { prose, cards } = cardsFromAnswer(text);
+    const listingCards = cards.filter(shouldUpsertListing);
+    if (listingCards.length && topic.project) {
+      const project = (await dbGet(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0];
+      if (project) {
+        for (const card of listingCards) {
+          const url = listingUrlFromCard(card) || listingUrl(message.text) || card.address || "manual";
+          await upsertListingFromCard(project, url, card, prose);
+        }
+      }
+    }
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "succeeded",
       finished_at: new Date().toISOString(),
       model,
-      result: { text },
+      result: { text: prose },
     });
-    return text;
+    return prose;
   } catch (error) {
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "failed",
