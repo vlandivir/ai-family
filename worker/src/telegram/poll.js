@@ -22,17 +22,26 @@ function token() {
   return value;
 }
 
-async function call(method, body) {
+async function call(method, body, options = {}) {
   const response = await fetch(`${api}/bot${token()}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    ...options,
   });
   const payload = await response.json();
   if (!payload.ok) {
     throw new Error(payload.description || method);
   }
   return payload.result;
+}
+
+export function setMessageReaction(chatId, messageId, emoji) {
+  return call("setMessageReaction", {
+    chat_id: chatId,
+    message_id: messageId,
+    reaction: [{ type: "emoji", emoji }],
+  }, { signal: AbortSignal.timeout(5000) });
 }
 
 function escapeHtml(value) {

@@ -7,10 +7,11 @@ import { agentBusy } from "./agent/run.js";
 import { dbInsert } from "./db.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
-import { downloadTelegramFile, poll, sendAnswer, sendMessage } from "./telegram/poll.js";
+import { downloadTelegramFile, poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
 
 const topicsPath = join(dirname(fileURLToPath(import.meta.url)), "../config/topics.json");
 const topics = JSON.parse(await readFile(topicsPath, "utf8"));
+const queuedReactions = new Map();
 
 if (!process.env.TELEGRAM_ALLOWED_USER_IDS?.trim()) {
   console.error("TELEGRAM_ALLOWED_USER_IDS is empty, private chats are closed");
@@ -70,7 +71,12 @@ async function processTelegramJob(job) {
   const { message, topic, sessionKey: key, url } = job.payload;
   const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
   try {
-    await reply("Беру в работу.");
+    await queuedReactions.get(job.id);
+    try {
+      await setMessageReaction(message.chatId, message.messageId, "⚡");
+    } catch (error) {
+      console.error("telegram working reaction", error.message);
+    }
     const cwd = topic.repo ? await ensureRepo(topic.repo, key) : await workspaceFor(key);
     try {
       message.filePaths = await saveFiles(message, cwd);
@@ -111,9 +117,13 @@ await poll(async (message) => {
   const key = sessionKey(message);
   const topic = topicConfig(message);
   const conversation = await openConversation(message, key);
+  const jobId = jobIdFor(message);
+  if (queuedReactions.has(jobId)) return;
+  let releaseReaction;
+  queuedReactions.set(jobId, new Promise((resolve) => { releaseReaction = resolve; }));
   try {
     await dbInsert("agent_jobs", {
-      id: jobIdFor(message),
+      id: jobId,
       conversation_id: conversation.id,
       source: "telegram",
       external_user_id: message.userId,
@@ -122,9 +132,16 @@ await poll(async (message) => {
       status: "queued",
     });
   } catch (error) {
+    releaseReaction();
+    queuedReactions.delete(jobId);
     if (/23505/.test(error.message)) return;
     throw error;
   }
-  await reply("Принял, поставил в очередь.");
+  void setMessageReaction(message.chatId, message.messageId, "👀")
+    .catch((error) => console.error("telegram queued reaction", error.message))
+    .finally(() => {
+      releaseReaction();
+      queuedReactions.delete(jobId);
+    });
   void jobs.wake();
 });
