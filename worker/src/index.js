@@ -1,8 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startTelegramJobs } from "./agent/jobs.js";
 import { agentBusy } from "./agent/run.js";
-import { ensureRepo, listingUrl, runListing, runQueued } from "./queue.js";
+import { dbInsert } from "./db.js";
+import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
 import { downloadTelegramFile, poll, sendAnswer, sendMessage } from "./telegram/poll.js";
 
@@ -48,36 +51,73 @@ async function saveFiles(message, cwd) {
   return paths;
 }
 
-startScan({ busy: agentBusy });
+async function workspaceFor(key) {
+  const root = process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace";
+  const name = createHash("sha256").update(key).digest("hex").slice(0, 16);
+  const dir = join(root, "contexts", name);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
 
-await poll(async (message) => {
-  const reply = (text) => sendMessage(message.chatId, text, message.threadId);
-  if (message.text === "/start") {
-    await reply("Можно писать задачу.");
-    return;
-  }
-  if (agentBusy()) {
-    await reply("Уже занят, подожди.");
-    return;
-  }
-  await reply("Беру в работу.");
+async function processTelegramJob(job) {
+  const { message, topic, sessionKey: key, url } = job.payload;
+  const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
   try {
-    const topic = topicConfig(message);
-    const cwd = topic.repo ? await ensureRepo(topic.repo) : undefined;
+    await reply("Беру в работу.");
+    const cwd = topic.repo ? await ensureRepo(topic.repo, key) : await workspaceFor(key);
     try {
       message.filePaths = await saveFiles(message, cwd);
     } catch (error) {
       console.error("telegram file", error.message);
       await reply("Файл не скачался. Бот получает вложения до 20 МБ.");
-      if (!message.text) return;
+      if (!message.text) throw error;
     }
-    const url = listingUrl(message.text);
     const answer = topic.project && url
-      ? await runListing(message, sessionKey(message), topic, url)
-      : await runQueued(message, sessionKey(message), promptFor(message, topic), cwd, topic);
-    await sendAnswer(message.chatId, answer, message.threadId);
+      ? await runListing(message, key, topic, url, job)
+      : await runQueued(message, key, promptFor(message, topic), cwd, topic, job);
+    await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
   } catch (error) {
     console.error("job failed", error.message);
     await reply("Не вышло разобрать сообщение. Подробность осталась в логе сервера.");
+    throw error;
   }
+}
+
+startScan({ busy: agentBusy });
+const jobs = startTelegramJobs({
+  processJob: processTelegramJob,
+  notifyInterrupted: (message) => sendMessage(
+    message.chatId,
+    "Обработка прервалась из-за перезапуска бота. Пожалуйста, отправь сообщение ещё раз.",
+    message.threadId,
+    message.messageId,
+  ),
+});
+await jobs.ready;
+
+await poll(async (message) => {
+  const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
+  if (message.text === "/start") {
+    await reply("Можно писать задачу.");
+    return;
+  }
+  const key = sessionKey(message);
+  const topic = topicConfig(message);
+  const conversation = await openConversation(message, key);
+  try {
+    await dbInsert("agent_jobs", {
+      conversation_id: conversation.id,
+      source: "telegram",
+      external_user_id: message.userId,
+      kind: topic.project && listingUrl(message.text) ? "analyze_listing" : "chat",
+      payload: { message, topic, sessionKey: key, url: listingUrl(message.text) },
+      status: "queued",
+      telegram_update_id: message.updateId,
+    });
+  } catch (error) {
+    if (/23505/.test(error.message)) return;
+    throw error;
+  }
+  await reply("Принял, поставил в очередь.");
+  void jobs.wake();
 });
