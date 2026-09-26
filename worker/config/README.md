@@ -1,6 +1,6 @@
 # Настройки агента на хосте
 
-Секреты здесь не лежат. Их держат в `/etc/ai-family.env` на машине воркера: `CURSOR_API_KEY`, `GITHUB_PAT`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS`, ключи Supabase.
+Секреты здесь не лежат. Их держат в `/etc/ai-family.env` на машине воркера: ключ Cursor, GitHub, Telegram, Supabase и бакет фото Hetzner.
 
 Повторить на новом хосте:
 
@@ -11,4 +11,4 @@
 
 `cli-permissions.json` разрешает веб-поиск, чтение страниц, `git`, файлы рабочей папки и MCP GitHub. Чтение `.env` и `rm` запрещены.
 
-Сессии диалогов — каталог `/var/lib/ai-family/chats/` на хосте, один файл на Telegram id. В файле id чата Cursor, `startedAt` и `updatedAt`. Это состояние машины, в git его нет. Самые старые — с самой ранней `startedAt`. Старый общий `telegram-chats.json` при первом запуске раскладывается по этим файлам.
+Сессии диалогов — каталог `/var/lib/ai-family/chats/` на хосте. Личный чат — файл `user:<id>`, тема группы — `topic:<chat>:<тема>`. В файле id чата Cursor, `startedAt` и `updatedAt`. Это состояние машины, в git его нет. Репозитории проектов воркер держит в `/var/lib/ai-family/repos/` и обновляет перед заданием. Вложения из Telegram попадают в `inbox/` этой копии. Витрину выкладывает не этот репозиторий, а пуш в `main` репозитория проекта.
