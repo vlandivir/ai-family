@@ -239,15 +239,10 @@ export async function poll(onText) {
       continue;
     }
     let pending = null;
-    const deliver = async (incoming) => {
-      try {
-        await onText(incoming);
-      } catch (error) {
-        console.error("handler", error.message);
-      }
-    };
-    for (const update of updates) {
-      offset = update.update_id + 1;
+    let nextOffset = offset;
+    try {
+      for (const update of updates) {
+      nextOffset = update.update_id + 1;
       const message = update.message;
       if (!message || message.from?.is_bot) continue;
       const text = message.text || message.caption || "";
@@ -279,9 +274,14 @@ export async function poll(onText) {
         if (text) pending.text = [pending.text, text].filter(Boolean).join("\n");
         continue;
       }
-      if (pending) await deliver(pending);
+      if (pending) await onText(pending);
       pending = incoming;
     }
-    if (pending) await deliver(pending);
+      if (pending) await onText(pending);
+      offset = nextOffset;
+    } catch (error) {
+      console.error("telegram handler", error.message);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
   }
 }
