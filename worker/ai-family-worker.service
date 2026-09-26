@@ -9,9 +9,9 @@ EnvironmentFile=/etc/ai-family.env
 Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin
 Environment=AGENT_BIN=/root/.local/bin/agent
 Environment=AGENT_WORKSPACE=/var/lib/ai-family/workspace
-WorkingDirectory=/opt/ai-family/worker
+WorkingDirectory=/opt/ai-family-current/worker
 ExecStartPre=/usr/bin/mkdir -p /var/lib/ai-family/workspace
-ExecStart=/usr/bin/node /opt/ai-family/worker/src/index.js
+ExecStart=/usr/bin/node /opt/ai-family-current/worker/src/index.js
 Restart=on-failure
 RestartSec=3
 
