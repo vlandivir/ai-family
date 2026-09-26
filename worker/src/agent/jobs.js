@@ -12,7 +12,7 @@ export function startTelegramJobs({ processJob, notifyInterrupted }) {
     if (checking) return;
     checking = true;
     try {
-      const jobs = await dbGet("agent_jobs?source=eq.telegram&status=eq.queued&telegram_update_id=not.is.null&select=*&order=created_at.asc,id.asc&limit=100");
+      const jobs = await dbGet("agent_jobs?source=eq.telegram&status=eq.queued&select=*&order=created_at.asc,id.asc&limit=100");
       for (const job of jobs) {
         if (scheduled.has(job.id)) continue;
         const key = job.payload?.sessionKey;
@@ -48,8 +48,9 @@ export function startTelegramJobs({ processJob, notifyInterrupted }) {
 
   async function recoverInterrupted() {
     try {
-      const jobs = await dbGet("agent_jobs?source=eq.telegram&status=eq.running&telegram_update_id=not.is.null&select=id,payload&limit=1000");
+      const jobs = await dbGet("agent_jobs?source=eq.telegram&status=eq.running&select=id,payload&limit=1000");
       for (const job of jobs) {
+        if (!job.payload?.sessionKey) continue;
         await dbPatch(`agent_jobs?id=eq.${job.id}&status=eq.running`, {
           status: "failed",
           finished_at: new Date().toISOString(),

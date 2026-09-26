@@ -29,6 +29,13 @@ function sessionKey(message) {
   return `topic:${message.chatId}:${message.threadId ?? 1}`;
 }
 
+function jobIdFor(message) {
+  const hex = createHash("sha256")
+    .update(`telegram:${message.chatId}:${message.updateId}`)
+    .digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 function fileNote(paths) {
   if (!paths?.length) return "";
   return `\n\nК сообщению приложены файлы. Прочитай их и учти в ответе:\n${paths.map((path) => `- ${path}`).join("\n")}`;
@@ -106,13 +113,13 @@ await poll(async (message) => {
   const conversation = await openConversation(message, key);
   try {
     await dbInsert("agent_jobs", {
+      id: jobIdFor(message),
       conversation_id: conversation.id,
       source: "telegram",
       external_user_id: message.userId,
       kind: topic.project && listingUrl(message.text) ? "analyze_listing" : "chat",
       payload: { message, topic, sessionKey: key, url: listingUrl(message.text) },
       status: "queued",
-      telegram_update_id: message.updateId,
     });
   } catch (error) {
     if (/23505/.test(error.message)) return;

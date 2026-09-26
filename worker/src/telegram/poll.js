@@ -242,41 +242,41 @@ export async function poll(onText) {
     let nextOffset = offset;
     try {
       for (const update of updates) {
-      nextOffset = update.update_id + 1;
-      const message = update.message;
-      if (!message || message.from?.is_bot) continue;
-      const text = message.text || message.caption || "";
-      const files = attachments(message);
-      if (!text && !files.length) continue;
-      const chatType = message.chat?.type;
-      const userId = String(message.from.id);
-      const inGroup = chatType === "group" || chatType === "supergroup";
-      if (!inGroup && chatType !== "private") continue;
-      if (!inGroup && !allow.has(userId)) {
-        console.error(`denied telegram user id=${userId}`);
-        continue;
+        nextOffset = update.update_id + 1;
+        const message = update.message;
+        if (!message || message.from?.is_bot) continue;
+        const text = message.text || message.caption || "";
+        const files = attachments(message);
+        if (!text && !files.length) continue;
+        const chatType = message.chat?.type;
+        const userId = String(message.from.id);
+        const inGroup = chatType === "group" || chatType === "supergroup";
+        if (!inGroup && chatType !== "private") continue;
+        if (!inGroup && !allow.has(userId)) {
+          console.error(`denied telegram user id=${userId}`);
+          continue;
+        }
+        const name = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ");
+        const incoming = {
+          updateId: update.update_id,
+          messageId: message.message_id,
+          chatId: message.chat.id,
+          userId,
+          text,
+          files,
+          threadId: message.message_thread_id ?? null,
+          inGroup,
+          senderName: name || message.from.username || userId,
+          mediaGroupId: message.media_group_id || null,
+        };
+        if (incoming.mediaGroupId && pending?.mediaGroupId === incoming.mediaGroupId && pending.chatId === incoming.chatId) {
+          pending.files.push(...files);
+          if (text) pending.text = [pending.text, text].filter(Boolean).join("\n");
+          continue;
+        }
+        if (pending) await onText(pending);
+        pending = incoming;
       }
-      const name = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ");
-      const incoming = {
-        updateId: update.update_id,
-        messageId: message.message_id,
-        chatId: message.chat.id,
-        userId,
-        text,
-        files,
-        threadId: message.message_thread_id ?? null,
-        inGroup,
-        senderName: name || message.from.username || userId,
-        mediaGroupId: message.media_group_id || null,
-      };
-      if (incoming.mediaGroupId && pending?.mediaGroupId === incoming.mediaGroupId && pending.chatId === incoming.chatId) {
-        pending.files.push(...files);
-        if (text) pending.text = [pending.text, text].filter(Boolean).join("\n");
-        continue;
-      }
-      if (pending) await onText(pending);
-      pending = incoming;
-    }
       if (pending) await onText(pending);
       offset = nextOffset;
     } catch (error) {
