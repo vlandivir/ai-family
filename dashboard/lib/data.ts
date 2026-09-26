@@ -9,7 +9,9 @@ type Project = { id: string; name: string; slug: string };
 type Job = {
   id: string; conversation_id: string; created_at: string; started_at: string | null;
   finished_at: string | null; status: string; attempts: number; model: string | null;
-  error: string | null; payload: { message?: { text?: string }; text?: string } | null;
+  error: string | null; external_user_id: string | null;
+  payload: { message?: { text?: string; senderName?: string; files?: unknown[] }; text?: string } | null;
+  result: { text?: string } | null;
 };
 
 async function rows<T>(path: string): Promise<T[]> {
@@ -37,7 +39,7 @@ export async function dashboardData() {
   const [conversations, projects, jobs] = await Promise.all([
     allRows<Conversation>("conversations?select=id,project_id,kind,telegram_chat_id,telegram_topic_id,opened_by,started_at,closed_at&order=started_at.desc"),
     allRows<Project>("projects?select=id,name,slug"),
-    allRows<Job>("agent_jobs?source=eq.telegram&select=id,conversation_id,created_at,started_at,finished_at,status,attempts,model,error,payload&order=created_at.desc"),
+    allRows<Job>("agent_jobs?source=eq.telegram&select=id,conversation_id,created_at,started_at,finished_at,status,attempts,model,error,external_user_id,payload,result&order=created_at.desc"),
   ]);
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const jobsByConversation = new Map<string, Job[]>();
@@ -58,7 +60,7 @@ export async function dashboardData() {
       active: active || null,
       queueLength: queued.length,
       state: active ? "running" : queued.length ? "queued" : latest?.status || "idle",
-      jobs: branchJobs.slice(0, 8),
+      jobs: branchJobs,
     };
   });
   branches.sort((a, b) => (b.latest?.created_at || b.started_at).localeCompare(a.latest?.created_at || a.started_at));
