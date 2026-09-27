@@ -347,6 +347,12 @@ async function analyzeOne(topic, state, projectId) {
   return state;
 }
 
+export function nextScanAction(state, date = today()) {
+  if (state.pending?.length && (state.analyzedOn !== date || (state.analyzed || 0) < 3)) return "analyze";
+  if (state.queue?.length) return "candidate";
+  return "search_page";
+}
+
 export async function scanOnce(topic) {
   const project = (await dbGet(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0];
   if (!project) return;
@@ -363,9 +369,10 @@ export async function scanOnce(topic) {
     return;
   }
   let state = await readState();
-  if (state.pending?.length) {
+  const action = nextScanAction(state);
+  if (action === "analyze") {
     state = await analyzeOne(topic, state, project.id);
-  } else if (state.queue?.length) {
+  } else if (action === "candidate") {
     state = await peekOne(rows, state, project.id);
   } else {
     state = await readOneSearch(dir, rows, state, project.id);
