@@ -50,11 +50,11 @@ jobs:
           node-version: '22'
       - name: Link existing Vercel project
         run: |
-          mkdir -p dashboard/.vercel
-          printf '%s\n' '{"orgId":"team_3ZUjZqnY2t6peCnDBV7AUhjZ","projectId":"prj_r9lwd1GaVvmzQ8jJjwiEhCn9jJOJ"}' > dashboard/.vercel/project.json
+          mkdir -p .vercel
+          printf '%s\n' '{"orgId":"team_3ZUjZqnY2t6peCnDBV7AUhjZ","projectId":"prj_r9lwd1GaVvmzQ8jJjwiEhCn9jJOJ"}' > .vercel/project.json
       - name: Deploy status dashboard
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           test -n "$VERCEL_TOKEN"
-          npx --yes vercel@60.1.3 deploy --prod --yes --cwd dashboard --scope team_3ZUjZqnY2t6peCnDBV7AUhjZ --token "$VERCEL_TOKEN"
+          npx --yes vercel@60.1.3 deploy --prod --yes --scope team_3ZUjZqnY2t6peCnDBV7AUhjZ --token "$VERCEL_TOKEN"
