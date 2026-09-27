@@ -34,3 +34,27 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: test
           ALLOWED_EMAILS: test@example.com
         run: npm run build --prefix dashboard
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ai-family-dashboard-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Link existing Vercel project
+        run: |
+          mkdir -p dashboard/.vercel
+          printf '%s\n' '{"orgId":"team_3ZUjZqnY2t6peCnDBV7AUhjZ","projectId":"prj_r9lwd1GaVvmzQ8jJjwiEhCn9jJOJ"}' > dashboard/.vercel/project.json
+      - name: Deploy status dashboard
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          test -n "$VERCEL_TOKEN"
+          npx --yes vercel@60.1.3 deploy --prod --yes --cwd dashboard --scope team_3ZUjZqnY2t6peCnDBV7AUhjZ --token "$VERCEL_TOKEN"
