@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { retryableJobError, startTelegramJobs } from "./agent/jobs.js";
 import { agentBusy } from "./agent/run.js";
+import { catalogNumberFromMessage, lookupCatalogNumber } from "./catalog-lookup.js";
 import { dbInsert, dbPatch } from "./db.js";
 import { startHeartbeat } from "./health.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
@@ -148,6 +149,16 @@ await poll(async (message) => {
   const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
   if (message.text === "/start") {
     await reply("Можно писать задачу.");
+    return;
+  }
+  const number = catalogNumberFromMessage(message.text);
+  if (number) {
+    try {
+      await reply(await lookupCatalogNumber(number, topicConfig(message).project));
+    } catch (error) {
+      console.error("catalog lookup", error.message);
+      await reply("Не удалось получить карточку. Попробуй ещё раз чуть позже.");
+    }
     return;
   }
   const key = sessionKey(message);
