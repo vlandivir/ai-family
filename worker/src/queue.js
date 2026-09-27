@@ -92,13 +92,6 @@ function listingUrlFromCard(card) {
   return null;
 }
 
-async function nextCatalogNumber(projectId) {
-  const rows = await dbGet(
-    `listings?project_id=eq.${projectId}&catalog_number=not.is.null&select=catalog_number&order=catalog_number.desc&limit=1`,
-  );
-  return (Number(rows[0]?.catalog_number) || 0) + 1;
-}
-
 async function upsertListingFromCard(project, url, card, prose) {
   const known = await dbGet(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
   const match = known.find((item) => item.id === card?.match_id);
@@ -121,7 +114,6 @@ async function upsertListingFromCard(project, url, card, prose) {
     await dbPatch(`listings?id=eq.${match.id}`, row);
   } else {
     if (!row.source_urls) row.source_urls = [url];
-    row.catalog_number = await nextCatalogNumber(project.id);
     await dbInsert("listings", row);
   }
 }
@@ -279,7 +271,6 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
       await dbPatch(`listings?id=eq.${match.id}`, row);
     } else {
       row.source_urls = [url];
-      row.catalog_number = await nextCatalogNumber(project.id);
       await dbInsert("listings", row);
     }
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
