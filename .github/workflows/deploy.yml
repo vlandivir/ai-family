@@ -7,11 +7,13 @@ on:
     paths:
       - 'worker/**'
       - 'scripts/**'
+      - 'supabase/migrations/**'
       - '.github/workflows/deploy.yml'
   pull_request:
     paths:
       - 'worker/**'
       - 'scripts/**'
+      - 'supabase/migrations/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
@@ -36,6 +38,7 @@ jobs:
       - name: Check deployment script and imports
         run: |
           bash -n scripts/deploy.sh
+          node scripts/apply-migrations.mjs supabase/migrations validate
           node --input-type=module -e "await import('./worker/src/storage.js')"
 
   deploy:

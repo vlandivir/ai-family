@@ -112,6 +112,8 @@ if [ ! -d "$RELEASE" ]; then
   STAGING=""
 fi
 
+node --env-file=/etc/ai-family.env "$RELEASE/scripts/apply-migrations.mjs" "$RELEASE/supabase/migrations"
+
 if [ "$OLD_TARGET" = "$RELEASE" ] && systemctl is-active --quiet ai-family-worker &&
   cmp -s "$RELEASE/worker/ai-family-worker.service" "$UNIT" &&
   cmp -s "$RELEASE/scripts/deploy.sh" /usr/local/sbin/ai-family-deploy.sh; then
