@@ -1,11 +1,19 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { dbGet, dbPatch } from "./db.js";
+import { dbGet, dbInsert, dbPatch } from "./db.js";
 import { ensureRepo, runListing } from "./queue.js";
 import { sendMessage } from "./telegram/poll.js";
 
 const dayMs = 24 * 60 * 60 * 1000;
 const statePath = process.env.SCAN_STATE_PATH || "/var/lib/ai-family/scan-state.json";
+
+async function recordScan(projectId, event) {
+  try {
+    await dbInsert("scan_events", { project_id: projectId, ...event, error: event.error ? String(event.error).slice(0, 500) : null });
+  } catch (error) {
+    console.error("scan log", error.message);
+  }
+}
 
 export function canonicalUrl(value) {
   try {
@@ -151,7 +159,7 @@ function priceUpdate(details, price, url) {
   };
 }
 
-async function recheck(rows, hours) {
+async function recheck(rows, hours, projectId) {
   const due = rows
     .filter((row) => row.source_url && row.status !== "test" && stale(row.details, hours))
     .sort((a, b) => String(a.details?.availabilityChecked || "").localeCompare(String(b.details?.availabilityChecked || "")))
@@ -170,6 +178,7 @@ async function recheck(rows, hours) {
         availabilityNote: "Повтор через сутки.",
       };
       await dbPatch(`listings?id=eq.${row.id}`, { details });
+      await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "fetch_error", error: error.message });
       continue;
     }
     const details = { ...(row.details || {}) };
@@ -179,6 +188,7 @@ async function recheck(rows, hours) {
       details.availabilityLabel = "Снято";
       details.availabilityNote = `Страница ответила ${page.status}.`;
       await dbPatch(`listings?id=eq.${row.id}`, { details });
+      await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "removed", http_status: page.status });
       changes.push(`№${row.catalog_number || "?"} ${row.address || "без адреса"}: снято`);
       continue;
     }
@@ -189,12 +199,14 @@ async function recheck(rows, hours) {
       details.availabilityLabel = "Проверено";
       details.availabilityNote = "Страница открылась, цену в разметке не нашёл.";
       await dbPatch(`listings?id=eq.${row.id}`, { details });
+      await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "price_unknown", http_status: page.status });
       continue;
     }
     const next = priceUpdate(details, price, row.source_url);
     const patch = { details: next.details };
     if (next.changed) patch.asking_price_eur = price;
     await dbPatch(`listings?id=eq.${row.id}`, patch);
+    await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: next.changed ? "price_changed" : "unchanged", http_status: page.status, details: { price, previous: next.previous } });
     if (next.changed && next.previous != null) {
       changes.push(`№${row.catalog_number || "?"} ${row.address || "без адреса"}: ${next.previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €`);
     }
@@ -231,7 +243,7 @@ function queuedUrl(item) {
   return item;
 }
 
-async function peekOne(rows, state) {
+async function peekOne(rows, state, projectId) {
   const known = knownUrls(rows);
   const skipped = new Set(state.skipped || []);
   const pending = [...(state.pending || [])];
@@ -242,14 +254,20 @@ async function peekOne(rows, state) {
     return { ...state, queue };
   }
   let price = null;
+  let httpStatus = null;
+  let fetchError = null;
   try {
     const page = await fetchPage(next.url);
+    httpStatus = page.status;
     if (page.status === 200) price = extractPrice(page.html);
   } catch (error) {
     console.error("scan peek", error.message);
+    fetchError = error.message;
   }
-  if (price != null && price > next.maxPriceEur) skipped.add(next.url);
+  const overBudget = price != null && price > next.maxPriceEur;
+  if (overBudget) skipped.add(next.url);
   else pending.push(next.url);
+  await recordScan(projectId, { source_url: next.url, action: "candidate", result: fetchError ? "fetch_error" : overBudget ? "over_budget" : "pending", http_status: httpStatus, error: fetchError, details: { price, maxPriceEur: next.maxPriceEur } });
   return {
     ...state,
     queue,
@@ -258,7 +276,7 @@ async function peekOne(rows, state) {
   };
 }
 
-async function readOneSearch(dir, rows, state) {
+async function readOneSearch(dir, rows, state, projectId) {
   const { searches } = await readSearches(dir);
   if (!searches.length) return state;
   const cursor = state.searchCursor || 0;
@@ -270,19 +288,27 @@ async function readOneSearch(dir, rows, state) {
     page = await fetchPage(url);
   } catch (error) {
     console.error("scan search", error.message);
+    await recordScan(projectId, { source_url: url, action: "search_page", result: "fetch_error", error: error.message });
     return { ...state, searchCursor: cursor + 1 };
   }
   const known = knownUrls(rows);
   const skipped = new Set(state.skipped || []);
   const pending = new Set(state.pending || []);
   const queue = new Set(state.queue || []);
+  let foundCount = 0;
+  let queuedCount = 0;
   if (page.status === 200) {
-    for (const found of extractListingUrls(page.html, url)) {
+    const foundUrls = extractListingUrls(page.html, url);
+    foundCount = foundUrls.length;
+    for (const found of foundUrls) {
       if (!known.has(found) && !skipped.has(found) && !pending.has(found)) {
+        const size = queue.size;
         queue.add(JSON.stringify({ url: found, maxPriceEur: maxPrice }));
+        if (queue.size > size) queuedCount += 1;
       }
     }
   }
+  await recordScan(projectId, { source_url: url, action: "search_page", result: page.status === 200 ? "scanned" : "http_error", http_status: page.status, details: { foundCount, queuedCount } });
   return {
     ...state,
     searchCursor: cursor + 1,
@@ -290,7 +316,7 @@ async function readOneSearch(dir, rows, state) {
   };
 }
 
-async function analyzeOne(topic, state) {
+async function analyzeOne(topic, state, projectId) {
   const limit = 3;
   if (state.analyzedOn !== today()) {
     state.analyzedOn = today();
@@ -311,8 +337,10 @@ async function analyzeOne(topic, state) {
     state.analyzed += 1;
     const topicChat = (await dbGet("conversations?kind=eq.topic&telegram_topic_id=eq.28&select=telegram_chat_id,telegram_topic_id&limit=1"))[0];
     if (topicChat) await sendMessage(topicChat.telegram_chat_id, prose || `Новая карточка: ${url}`, topicChat.telegram_topic_id);
+    await recordScan(projectId, { source_url: url, action: "analyze", result: "processed" });
   } catch (error) {
     console.error("scan analyze", error.message);
+    await recordScan(projectId, { source_url: url, action: "analyze", result: "failed", error: error.message });
     state.pending.shift();
     state.skipped = [...(state.skipped || []), url].slice(-500);
   }
@@ -326,7 +354,7 @@ export async function scanOnce(topic) {
     `listings?project_id=eq.${project.id}&status=neq.error&select=id,catalog_number,address,status,source_url,source_urls,asking_price_eur,details&order=catalog_number.asc&limit=1000`,
   );
   const dir = await ensureRepo(topic.repo, "scan:belgrade");
-  const changes = await recheck(rows, 24);
+  const changes = await recheck(rows, 24, project.id);
   if (changes.length || rows.some((row) => row.source_url && row.status !== "test" && stale(row.details, 24))) {
     if (changes.length) {
       const topicChat = (await dbGet("conversations?kind=eq.topic&telegram_topic_id=eq.28&select=telegram_chat_id,telegram_topic_id&limit=1"))[0];
@@ -336,11 +364,11 @@ export async function scanOnce(topic) {
   }
   let state = await readState();
   if (state.pending?.length) {
-    state = await analyzeOne(topic, state);
+    state = await analyzeOne(topic, state, project.id);
   } else if (state.queue?.length) {
-    state = await peekOne(rows, state);
+    state = await peekOne(rows, state, project.id);
   } else {
-    state = await readOneSearch(dir, rows, state);
+    state = await readOneSearch(dir, rows, state, project.id);
   }
   await writeState(state);
 }
