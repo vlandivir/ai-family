@@ -23,6 +23,16 @@ const labels: Record<string, string> = {
   queued: "В очереди", running: "В работе", succeeded: "Готово",
   failed: "Ошибка", cancelled: "Отменено", idle: "Нет задач", stalled: "Задержка",
 };
+const scanActions: Record<string, string> = {
+  search_page: "Поиск объявлений", candidate: "Проверка ссылки",
+  recheck: "Проверка карточки", analyze: "Разбор объявления",
+};
+const scanResults: Record<string, string> = {
+  scanned: "Страница проверена", http_error: "Ошибка HTTP", fetch_error: "Сайт не ответил",
+  over_budget: "Выше бюджета", pending: "В очереди на разбор", removed: "Объявление снято",
+  price_unknown: "Цена не найдена", price_changed: "Цена изменилась", unchanged: "Без изменений",
+  processed: "Карточка обработана", failed: "Разбор не удался",
+};
 
 function content(text: string) {
   return text.split(/(https?:\/\/[^\s<>]+)/g).map((part, index) =>
@@ -52,7 +62,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
   const user = await allowedUser();
   if (!user) return <main className="gate"><div className="gate-card"><div className="brand-mark">◈</div><p className="eyebrow">AI FAMILY / МОНИТОРИНГ</p><h1>Работа семьи<br />в одном месте.</h1><p className="gate-desc">Войдите через разрешённый Google аккаунт, чтобы видеть состояние всех задач и диалогов.</p><a className="google-button" href="/auth/login"><span className="google-g">G</span> Войти через Google <span aria-hidden>↗</span></a><p className="gate-note">Доступ есть только у адресов из настроек.</p></div></main>;
 
-  const { branches, totalJobs, updatedAt } = await dashboardData();
+  const { branches, scanEvents, totalJobs, updatedAt } = await dashboardData();
   const mediaReady = Boolean(process.env.HETZNER_S3_ENDPOINT && process.env.HETZNER_S3_BUCKET &&
     process.env.HETZNER_S3_ACCESS_KEY && process.env.HETZNER_S3_SECRET_KEY);
   const { chat } = await searchParams;
@@ -97,6 +107,24 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
         </> : <div className="conversation-empty">Диалоги появятся после первого сообщения боту.</div>}
       </section>
     </div>
+    <section className="scan-section" aria-label="Журнал обхода">
+      <div className="scan-heading"><div><p className="eyebrow">КВАРТИРЫ / ОБХОД</p><h2>Журнал проверки объявлений</h2><p>Последние 100 действий поиска и проверки карточек.</p></div><span>{scanEvents.length} записей</span></div>
+      <div className="scan-list">
+        {scanEvents.length ? scanEvents.map((event) => {
+          const failed = Boolean(event.error) || event.result === "failed" || event.result === "fetch_error" || event.result === "http_error";
+          const url = /^https?:\/\//i.test(event.source_url) ? event.source_url : null;
+          return <article className="scan-entry" key={event.id}>
+            <time dateTime={event.created_at}>{time(event.created_at)}</time>
+            <div className="scan-entry-main"><div className="scan-entry-label"><strong>{scanActions[event.action] || event.action}</strong><span>{event.projectName}</span></div>
+              {url ? <a href={url} target="_blank" rel="noopener noreferrer">{event.source_url}</a> : <span>{event.source_url}</span>}
+              {event.error && <p className="scan-error">{event.error}</p>}
+              {event.details?.foundCount != null && <small>Найдено: {event.details.foundCount} · добавлено в очередь: {event.details.queuedCount || 0}</small>}
+            </div>
+            <div className="scan-entry-result"><span className={failed ? "scan-failed" : "scan-ok"}>{scanResults[event.result] || event.result}</span>{event.http_status != null && <small>HTTP {event.http_status}</small>}</div>
+          </article>;
+        }) : <p className="scan-empty">Записи появятся после следующего обхода.</p>}
+      </div>
+    </section>
     <footer>AI FAMILY <span>·</span> ВРЕМЯ — БЕЛГРАД</footer>
   </main>;
 }

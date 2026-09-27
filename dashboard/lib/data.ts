@@ -6,6 +6,13 @@ type Conversation = {
   opened_by: string | null; started_at: string; closed_at: string | null;
 };
 type Project = { id: string; name: string; slug: string };
+export type ScanEvent = {
+  id: number; project_id: string; listing_id: string | null; created_at: string;
+  source_url: string; action: string; result: string;
+  http_status: number | null; error: string | null;
+  details: { foundCount?: number; queuedCount?: number; price?: number; previous?: number } | null;
+  projectName?: string;
+};
 export type Artifact = {
   kind: string; status: string; name?: string; mimeType?: string;
   size?: number | null; objectKey?: string; sourceIndex?: number;
@@ -43,10 +50,11 @@ async function allRows<T>(path: string): Promise<T[]> {
 }
 
 export async function dashboardData() {
-  const [conversations, projects, jobs] = await Promise.all([
+  const [conversations, projects, jobs, scanEvents] = await Promise.all([
     allRows<Conversation>("conversations?select=id,project_id,kind,telegram_chat_id,telegram_topic_id,opened_by,started_at,closed_at&order=started_at.desc"),
     allRows<Project>("projects?select=id,name,slug"),
     allRows<Job>("agent_jobs?source=eq.telegram&select=id,conversation_id,created_at,started_at,finished_at,status,attempts,model,error,external_user_id,payload,result,artifacts&order=created_at.desc"),
+    rows<ScanEvent>("scan_events?select=id,project_id,listing_id,created_at,source_url,action,result,http_status,error,details&order=created_at.desc&limit=100"),
   ]);
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const jobsByConversation = new Map<string, Job[]>();
@@ -72,5 +80,10 @@ export async function dashboardData() {
     };
   });
   branches.sort((a, b) => (b.latest?.created_at || b.started_at).localeCompare(a.latest?.created_at || a.started_at));
-  return { branches, totalJobs: jobs.length, updatedAt: new Date().toISOString() };
+  return {
+    branches,
+    scanEvents: scanEvents.map((event) => ({ ...event, projectName: projectById.get(event.project_id)?.name || "Проект" })),
+    totalJobs: jobs.length,
+    updatedAt: new Date().toISOString(),
+  };
 }
