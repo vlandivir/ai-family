@@ -42,7 +42,7 @@ jobs:
     needs: verify
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     concurrency:
       group: ai-family-worker-production
       cancel-in-progress: false

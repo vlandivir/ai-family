@@ -8,7 +8,7 @@ const askpass = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/git
 
 const agentBin = process.env.AGENT_BIN || "/root/.local/bin/agent";
 const workspace = process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace";
-export const agentTimeoutMs = Number(process.env.AGENT_TIMEOUT_MS || 10 * 60 * 1000);
+export const agentTimeoutMs = Number(process.env.AGENT_TIMEOUT_MS || 30 * 60 * 1000);
 if (!Number.isFinite(agentTimeoutMs) || agentTimeoutMs < 1000) {
   throw new Error("AGENT_TIMEOUT_MS must be at least 1000 milliseconds");
 }
