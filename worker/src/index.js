@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { retryableJobError, startTelegramJobs } from "./agent/jobs.js";
 import { agentBusy } from "./agent/run.js";
 import { dbInsert, dbPatch } from "./db.js";
+import { startHeartbeat } from "./health.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
 import { archiveAttachments, materializeObject, safeFileName } from "./storage.js";
@@ -131,16 +132,18 @@ const jobs = startTelegramJobs({
 });
 const shutdown = new AbortController();
 let draining;
+let stopHeartbeat;
 function stop() {
   if (draining) return;
   console.log("worker draining active jobs");
   shutdown.abort();
-  draining = Promise.all([jobs.stop(), scan.stop()]);
+  draining = Promise.all([jobs.stop(), scan.stop()]).finally(() => stopHeartbeat?.());
 }
 process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
 
 await jobs.ready;
+if (!draining) stopHeartbeat = startHeartbeat();
 await poll(async (message) => {
   const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
   if (message.text === "/start") {

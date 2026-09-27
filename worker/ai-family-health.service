@@ -1,0 +1,13 @@
+[Unit]
+Description=Check ai-family worker and Telegram queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ai-family
+Group=ai-family
+EnvironmentFile=/etc/ai-family.env
+Environment=HOME=/home/ai-family
+WorkingDirectory=/opt/ai-family-runtime/current
+ExecStart=/usr/bin/node /opt/ai-family-runtime/current/scripts/check-worker.mjs monitor

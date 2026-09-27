@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch ai-family worker and Telegram queue
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Unit=ai-family-health.service
+
+[Install]
+WantedBy=timers.target

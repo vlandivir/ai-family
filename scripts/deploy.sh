@@ -56,8 +56,18 @@ healthy_worker() {
   [ "$first_pid" -gt 0 ] || return 1
   sleep 5
   systemctl is-active --quiet ai-family-worker.service || return 1
-  [ "$(systemctl show ai-family-worker.service --value -p MainPID)" = "$first_pid" ] &&
-    [ "$(systemctl show ai-family-worker.service --value -p NRestarts)" = "$first_restarts" ]
+  [ "$(systemctl show ai-family-worker.service --value -p MainPID)" = "$first_pid" ] || return 1
+  [ "$(systemctl show ai-family-worker.service --value -p NRestarts)" = "$first_restarts" ] || return 1
+  if [ "$(readlink -f "$CURRENT")" = "$RELEASE" ]; then
+    for _ in $(seq 1 15); do
+      if node "$RELEASE/scripts/check-worker.mjs" startup "$first_pid" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 1
+    done
+    node "$RELEASE/scripts/check-worker.mjs" startup "$first_pid"
+  fi
+  return 0
 }
 
 cleanup() {
