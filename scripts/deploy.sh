@@ -124,8 +124,9 @@ fi
 ACTIVATED=1
 install -m 644 "$RELEASE/worker/ai-family-worker.service" "$UNIT"
 systemctl daemon-reload
+systemctl stop ai-family-worker
 switch_release "$RELEASE"
-systemctl restart ai-family-worker
+systemctl start ai-family-worker
 if ! healthy_worker; then
   journalctl -u ai-family-worker -n 30 --no-pager
   false

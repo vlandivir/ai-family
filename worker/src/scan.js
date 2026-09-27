@@ -347,20 +347,33 @@ export async function scanOnce(topic) {
 
 export function startScan({ busy }) {
   let running = false;
-  const tick = async () => {
-    if (running || busy()) return;
+  let stopping = false;
+  let runningPromise;
+  const tick = () => {
+    if (stopping || running || busy()) return;
     running = true;
-    try {
-      const topics = JSON.parse(await readFile(new URL("../config/topics.json", import.meta.url), "utf8"));
-      const topic = Object.values(topics.topics || {}).find((item) => item?.project === "belgrade-apartments");
-      if (topic) await scanOnce(topic);
-    } catch (error) {
-      console.error("scan", error.message);
-    } finally {
-      running = false;
-    }
+    runningPromise = (async () => {
+      try {
+        const topics = JSON.parse(await readFile(new URL("../config/topics.json", import.meta.url), "utf8"));
+        const topic = Object.values(topics.topics || {}).find((item) => item?.project === "belgrade-apartments");
+        if (topic) await scanOnce(topic);
+      } catch (error) {
+        console.error("scan", error.message);
+      } finally {
+        running = false;
+      }
+    })();
+    return runningPromise;
   };
-  setTimeout(tick, 20_000);
+  const initialTimer = setTimeout(tick, 20_000);
   const timer = setInterval(tick, Number(process.env.SCAN_EVERY_MS || 15 * 60 * 1000));
   timer.unref?.();
+  return {
+    stop() {
+      stopping = true;
+      clearTimeout(initialTimer);
+      clearInterval(timer);
+      return runningPromise || Promise.resolve();
+    },
+  };
 }

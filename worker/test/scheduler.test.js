@@ -36,3 +36,26 @@ test("runs different contexts in parallel and preserves order within a context",
   assert.deepEqual(started, ["first", "other", "second"]);
   second.resolve();
 });
+
+test("pause waits for active work and leaves pending work for database recovery", async () => {
+  const scheduler = createScheduler(1);
+  const active = deferred();
+  const started = deferred();
+  let pendingRan = false;
+  scheduler.enqueue("one", async () => {
+    started.resolve();
+    await active.promise;
+  });
+  scheduler.enqueue("two", async () => { pendingRan = true; });
+  await started.promise;
+  let stopped = false;
+  const stopping = scheduler.pause().then(() => { stopped = true; });
+  await Promise.resolve();
+  assert.equal(stopped, false);
+  active.resolve();
+  await stopping;
+  assert.equal(pendingRan, false);
+  scheduler.enqueue("three", async () => { pendingRan = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pendingRan, false);
+});

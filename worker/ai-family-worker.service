@@ -14,6 +14,8 @@ ExecStartPre=/usr/bin/mkdir -p /var/lib/ai-family/workspace
 ExecStart=/usr/bin/node /opt/ai-family-current/worker/src/index.js
 Restart=on-failure
 RestartSec=3
+KillMode=mixed
+TimeoutStopSec=660
 
 [Install]
 WantedBy=multi-user.target

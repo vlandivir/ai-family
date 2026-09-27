@@ -119,7 +119,7 @@ async function processTelegramJob(job) {
   }
 }
 
-startScan({ busy: agentBusy });
+const scan = startScan({ busy: agentBusy });
 const jobs = startTelegramJobs({
   processJob: processTelegramJob,
   notifyInterrupted: (message) => sendMessage(
@@ -129,8 +129,18 @@ const jobs = startTelegramJobs({
     message.messageId,
   ),
 });
-await jobs.ready;
+const shutdown = new AbortController();
+let draining;
+function stop() {
+  if (draining) return;
+  console.log("worker draining active jobs");
+  shutdown.abort();
+  draining = Promise.all([jobs.stop(), scan.stop()]);
+}
+process.once("SIGTERM", stop);
+process.once("SIGINT", stop);
 
+await jobs.ready;
 await poll(async (message) => {
   const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
   if (message.text === "/start") {
@@ -167,4 +177,5 @@ await poll(async (message) => {
       queuedReactions.delete(jobId);
     });
   void jobs.wake();
-});
+}, { signal: shutdown.signal });
+if (draining) await draining;

@@ -42,13 +42,16 @@ export function startTelegramJobs({ processJob, notifyInterrupted, get = dbGet, 
   const scheduler = createScheduler(maxConcurrent);
   const scheduled = new Set();
   let checking = false;
+  let stopping = false;
+  let timer;
 
   async function check() {
-    if (checking) return;
+    if (checking || stopping) return;
     checking = true;
     try {
       const jobs = await get("agent_jobs?source=eq.telegram&status=eq.queued&select=*&order=created_at.asc,id.asc&limit=100");
       for (const job of jobs) {
+        if (stopping) break;
         if (scheduled.has(job.id)) continue;
         const key = job.payload?.sessionKey;
         if (!key) continue;
@@ -80,7 +83,7 @@ export function startTelegramJobs({ processJob, notifyInterrupted, get = dbGet, 
                   finished_at: new Date().toISOString(),
                   error: String(error.message || error).slice(0, 500),
                 });
-                if (!retry || !changed.length) break;
+                if (!retry || !changed.length || stopping) break;
               }
             }
           } catch (error) {
@@ -100,8 +103,16 @@ export function startTelegramJobs({ processJob, notifyInterrupted, get = dbGet, 
 
   const ready = recoverInterruptedJobs({ get, patch, notifyInterrupted }).then(check);
   if (pollIntervalMs > 0) {
-    const timer = setInterval(() => void check(), pollIntervalMs);
+    timer = setInterval(() => void check(), pollIntervalMs);
     timer.unref?.();
   }
-  return { ready, wake: check };
+  return {
+    ready,
+    wake: check,
+    stop() {
+      stopping = true;
+      if (timer) clearInterval(timer);
+      return scheduler.pause();
+    },
+  };
 }

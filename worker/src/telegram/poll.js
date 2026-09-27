@@ -250,14 +250,15 @@ export async function downloadTelegramFile(fileId) {
   return bytes;
 }
 
-export async function poll(onText) {
+export async function poll(onText, { signal } = {}) {
   let offset = 0;
   const allow = allowedIds();
-  for (;;) {
+  while (!signal?.aborted) {
     let updates = [];
     try {
-      updates = await call("getUpdates", { offset, timeout: 50 });
+      updates = await call("getUpdates", { offset, timeout: 50 }, { signal });
     } catch (error) {
+      if (signal?.aborted) break;
       console.error("telegram poll", error.message);
       await new Promise((resolve) => setTimeout(resolve, 3000));
       continue;
@@ -266,6 +267,7 @@ export async function poll(onText) {
     let nextOffset = offset;
     try {
       for (const update of updates) {
+        if (signal?.aborted) break;
         nextOffset = update.update_id + 1;
         const message = update.message;
         if (!message || message.from?.is_bot) continue;
