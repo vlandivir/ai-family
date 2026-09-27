@@ -112,7 +112,9 @@ if [ ! -d "$RELEASE" ]; then
   STAGING=""
 fi
 
-if [ "$OLD_TARGET" = "$RELEASE" ] && systemctl is-active --quiet ai-family-worker; then
+if [ "$OLD_TARGET" = "$RELEASE" ] && systemctl is-active --quiet ai-family-worker &&
+  cmp -s "$RELEASE/worker/ai-family-worker.service" "$UNIT" &&
+  cmp -s "$RELEASE/scripts/deploy.sh" /usr/local/sbin/ai-family-deploy.sh; then
   echo "Already deployed $DEPLOY_SHA" >&3
   exit 0
 fi
