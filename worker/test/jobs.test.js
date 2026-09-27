@@ -21,11 +21,44 @@ test("job interrupted three times fails and notifies", async () => {
   let status;
   await recoverInterruptedJobs({
     get: async () => [{ id: "three", attempts: 3, payload: { sessionKey: "user:1", message: { chatId: 1 } } }],
-    patch: async (_path, value) => { status = value.status; },
+    patch: async (_path, value) => { status = value.status; return [{}]; },
     notifyInterrupted: async () => { notified = true; },
   });
   assert.equal(status, "failed");
   assert.equal(notified, true);
+});
+
+test("stale recovery skips the active agent and recently started jobs", async () => {
+  const changed = [];
+  const cutoff = Date.parse("2026-09-27T18:30:00Z");
+  await recoverInterruptedJobs({
+    get: async () => [
+      { id: "active", started_at: "2026-09-27T18:00:00Z", attempts: 1, payload: { sessionKey: "a" } },
+      { id: "recent", started_at: "2026-09-27T18:40:00Z", attempts: 1, payload: { sessionKey: "b" } },
+      { id: "stale", started_at: "2026-09-27T17:50:00Z", attempts: 1, payload: { sessionKey: "c" } },
+    ],
+    patch: async (path) => { changed.push(path); return [{}]; },
+    notifyInterrupted: async () => {},
+    staleBefore: cutoff,
+    excludedIds: new Set(["active"]),
+  });
+  assert.deepEqual(changed, ["agent_jobs?id=eq.stale&status=eq.running"]);
+});
+
+test("queue fetch selects due jobs in not-before order", async () => {
+  const paths = [];
+  const jobs = startTelegramJobs({
+    pollIntervalMs: 0,
+    get: async (path) => { paths.push(path); return []; },
+    patch: async () => [],
+    notifyInterrupted: async () => {},
+    processJob: async () => {},
+  });
+  await jobs.ready;
+  const path = paths.find((value) => value.includes("status=eq.queued"));
+  assert.match(path, /not_before=lte\.\d{4}-\d\d-\d\dT/);
+  assert.match(path, /order=not_before\.asc,created_at\.asc,id\.asc/);
+  await jobs.stop();
 });
 
 test("shutdown waits for claimed job and does not claim the next queued job", async () => {
