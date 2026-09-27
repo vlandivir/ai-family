@@ -215,7 +215,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
     "Уже известные карточки:",
     await knownListings(project.id),
     "Если это уже известный объект, поставь его id в match_id. Иначе match_id оставь null.",
-    "Borča, Mirijevo и блоки 71–72 не причина пропускать объявление. Карточку всё равно заполни, район напиши в neighborhood.",
+    "Borča, Mirijevo, Karaburma и блоки 71–72 не причина пропускать объявление. Карточку всё равно заполни, район напиши в neighborhood.",
     message.filePaths?.length ? `К сообщению приложены файлы. Прочитай их вместе со страницей:\n${message.filePaths.map((path) => `- ${path}`).join("\n")}` : "",
     message.location ? `К сообщению приложена геометка: ${message.location.latitude}, ${message.location.longitude}. Учти её при проверке адреса.` : "",
     message.unavailableFiles?.length ? `Эти вложения Telegram не дал скачать из-за лимита 20 МБ: ${message.unavailableFiles.join(", ")}. Не утверждай, что просмотрел их.` : "",
@@ -349,6 +349,7 @@ function listingRow(projectId, url, card, prose) {
 const excludedDistricts = [
   [/bor[cč]a|борча/i, "Borča"],
   [/mirijevo|миријево/i, "Mirijevo"],
+  [/karaburma|карабурма/i, "Karaburma"],
   [/blok(?:\s|-)*71\b|блок(?:\s|-)*71\b/i, "блок 71"],
   [/blok(?:\s|-)*72\b|блок(?:\s|-)*72\b/i, "блок 72"],
 ];
