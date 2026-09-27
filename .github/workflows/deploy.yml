@@ -63,4 +63,4 @@ jobs:
           chmod 600 ~/.ssh/deploy
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "root@${HOST}" "deploy ${DEPLOY_SHA}"
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "ai-family@${HOST}" "deploy ${DEPLOY_SHA}"

@@ -5,13 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=ai-family
+Group=ai-family
 EnvironmentFile=/etc/ai-family.env
-Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin
-Environment=AGENT_BIN=/root/.local/bin/agent
+Environment=HOME=/home/ai-family
+Environment=PATH=/home/ai-family/.local/bin:/usr/local/bin:/usr/bin
+Environment=AGENT_BIN=/home/ai-family/.local/bin/agent
 Environment=AGENT_WORKSPACE=/var/lib/ai-family/workspace
-WorkingDirectory=/opt/ai-family-current/worker
-ExecStartPre=/usr/bin/mkdir -p /var/lib/ai-family/workspace
-ExecStart=/usr/bin/node /opt/ai-family-current/worker/src/index.js
+WorkingDirectory=/opt/ai-family-runtime/current/worker
+ExecStart=/usr/bin/node /opt/ai-family-runtime/current/worker/src/index.js
 Restart=on-failure
 RestartSec=3
 KillMode=mixed

@@ -6,7 +6,7 @@ import { clearChatId, getChatId, setChatId } from "./sessions.js";
 
 const askpass = join(dirname(fileURLToPath(import.meta.url)), "../../scripts/git-askpass.sh");
 
-const agentBin = process.env.AGENT_BIN || "/root/.local/bin/agent";
+const agentBin = process.env.AGENT_BIN || join(process.env.HOME || "/root", ".local/bin/agent");
 const workspace = process.env.AGENT_WORKSPACE || "/var/lib/ai-family/workspace";
 export const agentTimeoutMs = Number(process.env.AGENT_TIMEOUT_MS || 30 * 60 * 1000);
 if (!Number.isFinite(agentTimeoutMs) || agentTimeoutMs < 1000) {

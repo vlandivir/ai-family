@@ -1,9 +1,9 @@
 #!/bin/bash
-# Кладёт настройки агента из репозитория в домашний каталог root на хосте.
+# Кладёт настройки агента в домашний каталог пользователя службы.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${CURSOR_HOME:-/root/.cursor}"
+DEST="${CURSOR_HOME:-$HOME/.cursor}"
 mkdir -p "$DEST"
 install -m 600 "$ROOT/worker/config/mcp.json" "$DEST/mcp.json"
 
