@@ -25,7 +25,7 @@ const labels: Record<string, string> = {
 };
 const scanActions: Record<string, string> = {
   search_page: "Поиск объявлений", candidate: "Проверка ссылки",
-  recheck: "Проверка карточки", analyze: "Разбор объявления",
+  recheck: "Проверка известного объявления", analyze: "Разбор нового объявления",
 };
 const scanResults: Record<string, string> = {
   started: "Начато", finished: "Завершено",
