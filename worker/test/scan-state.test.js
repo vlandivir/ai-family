@@ -152,3 +152,15 @@ test("the checker logs start and finish around old and new work", async () => {
     assert.deepEqual(order, ["started", "checked", kind === "new" ? "processed" : "finished"]);
   }
 });
+
+test("initial rejection logs its reason and never enters the notification queue", async () => {
+  const { store, saved } = memoryStore({ queue: [task("excluded")] });
+  const events = [];
+  await checkNext({}, "project", store, { now: () => now,
+    process: (task, topic, project) => checkTask(task, topic, project, { analyze: async () => ({ scanResult: "excluded", reason: "Первый этаж", notification: null }) }),
+    record: async (project, event) => events.push(event),
+  });
+  assert.deepEqual(saved().notifications, []);
+  assert.equal(events.at(-1).result, "excluded");
+  assert.equal(events.at(-1).details.reason, "Первый этаж");
+});

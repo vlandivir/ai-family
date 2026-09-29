@@ -9,6 +9,7 @@ import { getChatId } from "./agent/sessions.js";
 import { retryableJobError } from "./agent/jobs.js";
 import { runAgent } from "./agent/run.js";
 import { cardText } from "./catalog-lookup.js";
+import { assessmentStatuses, interestingListing } from "./listing-policy.js";
 
 const git = promisify(execFile);
 const repoRoot = process.env.PROJECT_REPOS_DIR || "/var/lib/ai-family/repos";
@@ -115,8 +116,9 @@ async function upsertListingFromCard(project, url, card, prose) {
     await dbPatch(`listings?id=eq.${match.id}`, row);
   } else {
     if (!row.source_urls) row.source_urls = [url];
-    await dbInsert("listings", row);
+    return cardText({ ...row, ...(await dbInsert("listings", row))[0] });
   }
+  return null;
 }
 
 export async function openConversation(message, sessionKey) {
@@ -168,13 +170,15 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
     const { prose, cards } = cardsFromAnswer(text);
+    const savedCards = [];
     const listingCards = cards.filter(shouldUpsertListing);
     if (listingCards.length && topic.project) {
       const project = (await dbGet(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0];
       if (project) {
         for (const card of listingCards) {
           const url = listingUrlFromCard(card) || listingUrl(message.text) || card.address || "manual";
-          await upsertListingFromCard(project, url, card, prose);
+          const savedCard = await upsertListingFromCard(project, url, card, prose);
+          if (savedCard) savedCards.push(savedCard);
         }
       }
     }
@@ -184,7 +188,7 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
       model,
       result: { text: prose },
     });
-    return prose;
+    return [...savedCards, prose].filter(Boolean).join("\n\n");
   } catch (error) {
     if (retryableJobError(job, error)) throw error;
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
@@ -211,6 +215,8 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
     scan?.scenario ? `Сценарий поиска: ${scan.scenario}. Оцени объект по этому сценарию.` : "",
     scan?.maxPriceEur ? `Бюджет поиска: не больше ${scan.maxPriceEur} EUR. Укажи достоверную цену в asking_price_eur.` : "",
     scan ? "Во время фонового разбора делай запросы к сайтам не чаще одного раза в 60 секунд. Объявление открывай один раз, повторные запросы к нему в этом разборе не делай." : "",
+    scan ? "Это первичный автоматический отбор. Обязательно поставь status: fit (подходит), conditional (интересный с оговоркой), excluded (исключён) или reference (только ориентир). При нарушении жёстких критериев выбирай excluded. Новые excluded/reference не сохраняются в каталог и не отправляются в чат. Не называй исключённый объект интересным." : "",
+    scan ? "В чат сообщаем только о новых fit/conditional и о существенных изменениях ранее подходящих объектов. Старые исключённые и ориентиры не возвращай в активную подборку. Неизменившиеся объекты, отказы, превышение бюджета и ошибки оставляй в журнале." : "",
     "Прочитай APARTMENT_SELECTION_INSTRUCTIONS.md в текущей папке и открой ссылку.",
     "Сначала реши, это страница одного объявления о квартире или доме.",
     "Витрина, каталог, поиск, статья и наша собственная страница — не объявление.",
@@ -223,13 +229,15 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
     "Уже известные карточки:",
     await knownListings(project.id, get),
     "Если это уже известный объект, поставь его id в match_id. Иначе match_id оставь null.",
-    "Borča, Mirijevo, Karaburma и блоки 71–72 не причина пропускать объявление. Карточку всё равно заполни, район напиши в neighborhood.",
+    scan
+      ? "Borča, Mirijevo, Karaburma и блоки 71–72 исключены: укажи район в neighborhood и status excluded. Новый объект оттуда не должен попасть в каталог или чат."
+      : "Borča, Mirijevo, Karaburma и блоки 71–72 исключены. При разборе ручной ссылки объясни причину и заполни карточку для сохранения решения покупателя.",
     message.filePaths?.length ? `К сообщению приложены файлы. Прочитай их вместе со страницей:\n${message.filePaths.map((path) => `- ${path}`).join("\n")}` : "",
     message.location ? `К сообщению приложена геометка: ${message.location.latitude}, ${message.location.longitude}. Учти её при проверке адреса.` : "",
     message.unavailableFiles?.length ? `Эти вложения Telegram не дал скачать из-за лимита 20 МБ: ${message.unavailableFiles.join(", ")}. Не утверждай, что просмотрел их.` : "",
     "В конце добавь блок ровно в таком виде:",
     "<<<JSON>>>",
-    '{"is_listing":true,"category":"rental","match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
+    '{"is_listing":true,"status":"fit","category":"rental","match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
     "<<<END>>>",
   ].join("\n");
   const inserted = queuedJob ? [queuedJob] : await insert("agent_jobs", {
@@ -255,36 +263,33 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
         status: "succeeded",
         finished_at: new Date().toISOString(),
         model,
-        result: { text: prose },
+        result: { text: prose, ...(scan ? { scanResult: "not_listing" } : {}) },
       });
-      return prose || "Это не страница объявления.";
+      return scan ? { scanResult: "not_listing", notification: null } : prose || "Это не страница объявления.";
     }
     if (scan && (!card || typeof card !== "object" || Array.isArray(card) || !shouldUpsertListing(card))) {
       const error = new Error("Агент не вернул JSON карточки объявления");
       error.code = "SCAN_NO_CARD";
       throw error;
     }
-    const price = numberOrNull(card?.asking_price_eur);
-    if (scan && price != null && Number.isFinite(scan.maxPriceEur) && price > scan.maxPriceEur) {
+    if (scan) {
+      const outcome = await saveScannedListing(project.id, url, card, prose, scan, { get, insert, patch });
       await patch(`agent_jobs?id=eq.${job.id}`, {
         status: "succeeded", finished_at: new Date().toISOString(), model,
-        result: { text: prose, scanResult: "over_budget", price, maxPriceEur: scan.maxPriceEur },
+        result: { text: prose, scanResult: outcome.scanResult, reason: outcome.reason },
       });
-      return prose || `Цена ${price} EUR превышает бюджет ${scan.maxPriceEur} EUR.`;
+      return outcome;
     }
     const known = await get(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
-    const canonical = comparableListingUrl(url);
-    const match = known.find((item) => item.id === card?.match_id)
-      || (scan && known.find((item) => canonical && [item.source_url, ...(Array.isArray(item.source_urls) ? item.source_urls : [])]
-        .some((value) => comparableListingUrl(value) === canonical)));
+    const match = known.find((item) => item.id === card?.match_id);
     const row = listingRow(project.id, url, card, prose);
-    let priceNotification;
     const banned = districtExclusion(row.address, row.neighborhood);
     if (banned) {
       row.status = "excluded";
       row.fit = `Исключён: ${banned}`;
       row.notes = [`Район ${banned} исключён с 21 сентября 2026. Карточка остаётся в списке.`, row.notes].filter(Boolean).join("\n");
     }
+    let savedCard;
     if (match) {
       row.source_urls = mergeUrls(match, url);
       delete row.project_id;
@@ -292,17 +297,11 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
       if (row.details) {
         const current = await get(`listings?id=eq.${match.id}&select=details,asking_price_eur,catalog_number,address,neighborhood,municipality,status`);
         row.details = { ...(current[0]?.details || {}), ...row.details };
-        if (scan) row.details = scannedDetails(row.details, row.asking_price_eur, url, scan.checkedAt, current[0]?.asking_price_eur);
-        const previous = numberOrNull(current[0]?.asking_price_eur);
-        if (scan && previous != null && row.asking_price_eur != null && previous !== row.asking_price_eur) {
-          priceNotification = `Цена изменилась: ${previous.toLocaleString("ru-RU")} € → ${row.asking_price_eur.toLocaleString("ru-RU")} €\n${cardText({ ...current[0], ...row })}`;
-        }
       }
       await patch(`listings?id=eq.${match.id}`, row);
     } else {
       row.source_urls = [url];
-      if (scan) row.details = scannedDetails(row.details, row.asking_price_eur, url, scan.checkedAt);
-      await insert("listings", row);
+      savedCard = { ...row, ...(await insert("listings", row))[0] };
     }
     await patch(`agent_jobs?id=eq.${job.id}`, {
       status: card ? "succeeded" : "failed",
@@ -311,7 +310,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
       result: { text: prose },
       error: card ? null : "no card json",
     });
-    return priceNotification || prose || "Карточка записана, но текст оценки пустой.";
+    return savedCard ? [cardText(savedCard), prose].filter(Boolean).join("\n\n") : prose || "Карточка записана, но текст оценки пустой.";
   } catch (error) {
     if (!scan && retryableJobError(job, error)) throw error;
     if (!scan) await insert("listings", {
@@ -330,6 +329,52 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
     });
     throw error;
   }
+}
+
+async function saveScannedListing(projectId, url, card, prose, scan, { get, insert, patch }) {
+  if (!assessmentStatuses.has(card.status)) {
+    const error = new Error("Автоматический разбор не вернул итоговый статус");
+    error.code = "SCAN_NO_VERDICT";
+    throw error;
+  }
+  const known = await get(`listings?project_id=eq.${projectId}&select=id,status,source_url,source_urls`);
+  const canonical = comparableListingUrl(url);
+  const match = known.find(item => item.id === card.match_id)
+    || known.find(item => canonical && [item.source_url, ...(Array.isArray(item.source_urls) ? item.source_urls : [])]
+      .some(value => comparableListingUrl(value) === canonical));
+  const row = listingRow(projectId, url, card, prose);
+  row.status = card.status;
+  const banned = districtExclusion(row.address, row.neighborhood);
+  const overBudget = row.asking_price_eur != null && row.asking_price_eur > scan.maxPriceEur;
+  if (banned || overBudget) row.status = "excluded";
+  const reason = banned ? `Исключённый район: ${banned}` : overBudget ? `Цена выше лимита ${scan.maxPriceEur} EUR` : card.fit || card.notes || prose;
+  if (banned || overBudget) row.fit = reason;
+  if (!match && !interestingListing(row)) {
+    return { scanResult: overBudget ? "over_budget" : row.status, reason, notification: null };
+  }
+  if (match) {
+    const current = { ...match, ...(await get(`listings?id=eq.${match.id}&select=*`))[0] };
+    const wasInteresting = interestingListing(current);
+    if (["excluded", "reference"].includes(current.status)) {
+      row.status = current.status;
+      row.fit = current.fit;
+    }
+    row.source_urls = mergeUrls(current, url);
+    delete row.project_id;
+    row.details = scannedDetails({ ...(current.details || {}), ...row.details }, row.asking_price_eur, url, scan.checkedAt, current.asking_price_eur);
+    const changed = ["status", "asking_price_eur", "address", "neighborhood", "area_m2", "rooms", "floor", "year_built", "heating"]
+      .some(field => (current[field] ?? null) !== (row[field] ?? null));
+    const saved = { ...current, ...row, ...(await patch(`listings?id=eq.${match.id}`, row))[0] };
+    const previous = numberOrNull(current.asking_price_eur);
+    const priceChanged = previous != null && row.asking_price_eur != null && previous !== row.asking_price_eur;
+    const heading = priceChanged ? `Цена изменилась: ${previous.toLocaleString("ru-RU")} € → ${row.asking_price_eur.toLocaleString("ru-RU")} €` : "Объект изменился";
+    return { scanResult: changed ? "updated" : "unchanged", reason,
+      notification: wasInteresting && changed ? [heading, cardText(saved), prose].filter(Boolean).join("\n\n") : null };
+  }
+  row.source_urls = [url];
+  row.details = scannedDetails(row.details, row.asking_price_eur, url, scan.checkedAt);
+  const saved = { ...row, ...(await insert("listings", row))[0] };
+  return { scanResult: "processed", notification: [cardText(saved), prose].filter(Boolean).join("\n\n") };
 }
 
 async function knownListings(projectId, get = dbGet) {
@@ -389,7 +434,7 @@ function listingRow(projectId, url, card, prose) {
   const banned = districtExclusion(card?.address, card?.neighborhood);
   return {
     project_id: projectId,
-    status: banned ? "excluded" : "new",
+    status: banned ? "excluded" : assessmentStatuses.has(card?.status) ? card.status : "new",
     city: "Belgrade",
     neighborhood: card?.neighborhood || null,
     address: card?.address || null,

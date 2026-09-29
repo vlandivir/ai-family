@@ -6,7 +6,7 @@ const checkedAt = "2026-09-29T08:00:00.000Z";
 const topic = { project: "belgrade-apartments", repo: "owner/repo", scan: { checkedAt, maxPriceEur: 200000, scenario: "living" } };
 const url = "https://4zida.rs/listing/123";
 const message = { inGroup: false, chatId: 0, userId: "scan:check", text: url };
-function setup(card = { is_listing: true, category: "living", address: "Belgrade", asking_price_eur: 180000 }, known = [], current = {}) {
+function setup(card = { is_listing: true, status: "fit", category: "living", address: "Belgrade", asking_price_eur: 180000 }, known = [], current = {}) {
   const inserted = [], patched = [];
   let prompt;
   return {
@@ -21,7 +21,7 @@ function setup(card = { is_listing: true, category: "living", address: "Belgrade
       },
       get: async path => path.startsWith("projects?") ? [{ id: "project" }]
         : path.startsWith("listings?id=") ? [current] : known,
-      insert: async (table, row) => { inserted.push({ table, row }); return [{ id: "job", ...row }]; },
+      insert: async (table, row) => { inserted.push({ table, row }); return [{ id: "job", ...(table === "listings" ? { catalog_number: 123 } : {}), ...row }]; },
       patch: async (path, row) => { patched.push({ path, row }); return [row]; },
     },
   };
@@ -29,7 +29,9 @@ function setup(card = { is_listing: true, category: "living", address: "Belgrade
 
 test("background listing jobs use independent source and store daily check stamp", async () => {
   const mock = setup();
-  await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+  const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+  assert.match(outcome.notification, /Объект №123/);
+  assert.match(outcome.notification, /https:\/\/4zida.rs\/listing\/123/);
   assert.equal(mock.inserted[0].row.source, "scan");
   assert.match(mock.prompt, /Сценарий поиска: living/);
   assert.match(mock.prompt, /не больше 200000 EUR/);
@@ -41,7 +43,7 @@ test("background listing jobs use independent source and store daily check stamp
 });
 
 test("scan price exceeding search budget records rejection without catalog insert", async () => {
-  const mock = setup({ is_listing: true, category: "living", asking_price_eur: 250000 });
+  const mock = setup({ is_listing: true, status: "fit", category: "living", asking_price_eur: 250000 });
   await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
   assert.equal(mock.inserted.filter(item => item.table === "listings").length, 0);
   assert.equal(mock.patched.at(-1).row.result.scanResult, "over_budget");
@@ -51,7 +53,7 @@ test("scan price exceeding search budget records rejection without catalog inser
 test("scan merges canonical source alias and preserves details and price history", async () => {
   const history = [{ date: "2026-09-20", price: 190000 }];
   const mock = setup(undefined, [{ id: "existing", source_url: "https://example.com/other", source_urls: [`https://www.4zida.rs/listing/123/?utm_source=site`] }], { catalog_number: 182, status: "fit", asking_price_eur: 190000, details: { custom: "retained", category: "rental", priceHistory: history } });
-  const answer = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+  const { notification: answer } = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
   assert.match(answer, /Цена изменилась: 190\s*000 € → 180\s*000 €/);
   assert.match(answer, /Объект №182/);
   assert.match(answer, /Статус: Подходит/);
@@ -88,4 +90,53 @@ test("scan agent timeout marks background job failed without creating an error l
   await assert.rejects(runListing(message, "scan:check", topic, url, undefined, mock.dependencies), { code: "AGENT_TIMEOUT" });
   assert.equal(mock.inserted.filter(item => item.table === "listings").length, 0);
   assert.equal(mock.patched.at(-1).row.status, "failed");
+});
+
+for (const [status, address] of [["excluded", "Belgrade"], ["reference", "Belgrade"], ["fit", "Karaburma"]]) {
+  test(`initial automatic rejection stays out of catalog and chat: ${status} ${address}`, async () => {
+    const mock = setup({ is_listing: true, status, address, fit: "Не подходит", asking_price_eur: 180000 });
+    const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+    assert.equal(outcome.notification, null);
+    assert.equal(outcome.scanResult, status === "fit" ? "excluded" : status);
+    assert.equal(mock.inserted.filter(item => item.table === "listings").length, 0);
+    assert.ok(outcome.reason);
+  });
+}
+
+test("missing verdict cannot silently become a new card", async () => {
+  const mock = setup({ is_listing: true, asking_price_eur: 180000 });
+  await assert.rejects(runListing(message, "scan:check", topic, url, undefined, mock.dependencies), { code: "SCAN_NO_VERDICT" });
+  assert.equal(mock.inserted.filter(item => item.table === "listings").length, 0);
+});
+
+test("new conditional object sends the saved numbered card", async () => {
+  const mock = setup({ is_listing: true, status: "conditional", address: "Belgrade", asking_price_eur: 180000 });
+  const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+  assert.match(outcome.notification, /Объект №123/);
+  assert.equal(mock.inserted.find(item => item.table === "listings").row.status, "conditional");
+});
+
+for (const oldStatus of ["fit", "conditional", "excluded", "reference"]) {
+  test(`rediscovered price change respects prior status ${oldStatus}`, async () => {
+    const mock = setup({ is_listing: true, status: "fit", asking_price_eur: 250000 }, [{ id: "existing", source_url: url }], { catalog_number: 182, status: oldStatus, asking_price_eur: 190000 });
+    const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+    assert.equal(mock.inserted.filter(item => item.table === "listings").length, 0);
+    const update = mock.patched.find(item => item.path === "listings?id=eq.existing").row;
+    assert.equal(update.asking_price_eur, 250000);
+    if (["fit", "conditional"].includes(oldStatus)) {
+      assert.equal(update.status, "excluded");
+      assert.match(outcome.notification, /190\s*000 € → 250\s*000 €/);
+      assert.match(outcome.notification, /Объект №182/);
+    } else {
+      assert.equal(update.status, oldStatus);
+      assert.equal(outcome.notification, null);
+    }
+  });
+}
+
+test("unchanged suitable object is updated quietly", async () => {
+  const mock = setup(undefined, [{ id: "existing", source_url: url }], { status: "fit", asking_price_eur: 180000, address: "Belgrade" });
+  const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+  assert.equal(outcome.scanResult, "unchanged");
+  assert.equal(outcome.notification, null);
 });

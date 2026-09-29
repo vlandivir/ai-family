@@ -33,6 +33,7 @@ const scanResults: Record<string, string> = {
   over_budget: "Выше бюджета", pending: "В очереди на разбор", removed: "Объявление снято",
   price_unknown: "Цена не найдена", price_changed: "Цена изменилась", unchanged: "Без изменений",
   processed: "Карточка обработана", failed: "Разбор не удался",
+  excluded: "Исключён при отборе", reference: "Только ориентир", not_listing: "Не объявление", updated: "Объект изменился",
 };
 
 function content(text: string) {
@@ -120,6 +121,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
               <small>{event.details?.agent === "search" || event.action === "search_page" ? "Агент поиска" : "Агент проверки"}</small>
               {url ? <a href={url} target="_blank" rel="noopener noreferrer">{event.source_url}</a> : <span>{event.source_url}</span>}
               {event.error && <p className="scan-error">{event.error}</p>}
+              {event.details?.reason && <small>{event.details.reason}</small>}
               {event.details?.foundCount != null && <small>Найдено: {event.details.foundCount} · добавлено в очередь: {event.details.queuedCount || 0}</small>}
             </div>
             <div className="scan-entry-result"><span className={failed ? "scan-failed" : "scan-ok"}>{scanResults[event.result] || event.result}</span>{event.http_status != null && <small>HTTP {event.http_status}</small>}</div>

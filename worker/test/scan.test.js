@@ -42,3 +42,24 @@ test("an unchanged first price check is quiet and recent checks are not repeated
   assert.deepEqual(await recheck([{ ...row, details: updated.details }], 24, "project", dependencies), []);
   assert.equal(fetches, 1);
 });
+
+for (const row of [{ status: "excluded" }, { status: "reference" }, { status: "new", fit: "исключён — первый этаж" }, { status: "conditional" }, { status: "new", fit: "подходит — хороший вариант" }]) {
+  test(`price monitoring only notifies previously interesting objects: ${JSON.stringify(row)}`, async () => {
+    let updated;
+    const notifications = await recheck([{ ...row, id: "listing", catalog_number: 123, asking_price_eur: 180000, source_url: "https://example.com/listing", details: {} }], 24, "project", {
+      fetch: async () => ({ status: 200, html: '<script type="application/ld+json">{"@type":"Offer","price":175000}</script>' }),
+      patch: async (path, value) => { updated = value; }, record: async () => {},
+    });
+    assert.equal(updated.asking_price_eur, 175000);
+    assert.equal(notifications.length, row.status === "conditional" || row.fit?.startsWith("подходит") ? 1 : 0);
+  });
+}
+
+test("removal is sent once and only for previously suitable objects", async () => {
+  for (const [status, availabilityStatus, expected] of [["fit", "active", 1], ["fit", "removed", 0], ["excluded", "active", 0]]) {
+    const changes = await recheck([{ id: "listing", status, source_url: "https://example.com/listing", details: { availabilityStatus } }], 24, "project", {
+      fetch: async () => ({ status: 404 }), patch: async () => {}, record: async () => {},
+    });
+    assert.equal(changes.length, expected);
+  }
+});

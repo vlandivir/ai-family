@@ -10,7 +10,7 @@ export type ScanEvent = {
   id: number; project_id: string; listing_id: string | null; created_at: string;
   source_url: string; action: string; result: string;
   http_status: number | null; error: string | null;
-  details: { agent?: "search" | "checker"; foundCount?: number; queuedCount?: number; price?: number; previous?: number } | null;
+  details: { agent?: "search" | "checker"; foundCount?: number; queuedCount?: number; price?: number; previous?: number; reason?: string } | null;
   projectName?: string;
 };
 export type Artifact = {

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { dbGet, dbInsert, dbPatch } from "./db.js";
 import { ensureRepo, runListing } from "./queue.js";
+import { interestingListing } from "./listing-policy.js";
 import { sendMessage } from "./telegram/poll.js";
 import { cardText } from "./catalog-lookup.js";
 import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, enqueueTasks, finishTask, searchEveryMs } from "./scan-state.js";
@@ -175,7 +176,7 @@ export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch
       details.availabilityNote = `Страница ответила ${page.status}.`;
       await patch(`listings?id=eq.${row.id}`, { details });
       await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "removed", http_status: page.status });
-      changes.push(`Снято с публикации\n${cardText(row)}`);
+      if (interestingListing(row) && row.details?.availabilityStatus !== "removed") changes.push(`Снято с публикации\n${cardText(row)}`);
       continue;
     }
     const price = page.status === 200 ? extractPrice(page.html) : null;
@@ -195,7 +196,7 @@ export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch
     const update = { details: next.details, asking_price_eur: price };
     await patch(`listings?id=eq.${row.id}`, update);
     await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: next.changed ? "price_changed" : "unchanged", http_status: page.status, details: { price, previous: next.previous } });
-    if (next.changed && next.previous != null) {
+    if (interestingListing(row) && next.changed && next.previous != null) {
       changes.push(`Цена изменилась: ${next.previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €\n${cardText({ ...row, asking_price_eur: price })}`);
     }
   }
@@ -327,10 +328,14 @@ export async function checkTask(task, topic, projectId, {
   // Do not pre-fetch a new listing: its dedicated agent opens it once and does the complete analysis.
   const key = `scan:${topic.project}:check`;
   const message = { inGroup: false, chatId: 0, userId: key, text: task.url, filePaths: [] };
-  const prose = await analyze(message, key, { ...topic, scan: {
+  const outcome = await analyze(message, key, { ...topic, scan: {
     checkedAt: task.checkedAt, maxPriceEur: task.maxPriceEur || 200000, scenario: task.scenario,
   } }, task.url);
-  return [prose || `Новая карточка: ${task.url}`];
+  if (outcome && typeof outcome === "object") return {
+    notifications: outcome.notification ? [outcome.notification] : [],
+    scanResult: outcome.scanResult, details: { reason: outcome.reason },
+  };
+  return outcome ? [outcome] : [];
 }
 
 export async function sendScanNotifications(store, { get = dbGet, send = sendMessage } = {}) {
@@ -353,10 +358,13 @@ export async function checkNext(topic, projectId, store, {
   return request(async () => {
     const task = await store.update(state => claimTask(state, now()));
     if (!task) return false;
-    let notifications = [], error;
+    let notifications = [], error, outcome;
     await record(projectId, { source_url: task.url, listing_id: task.listingId,
       action: task.kind === "new" ? "analyze" : "recheck", result: "started" });
-    try { notifications = await process(task, topic, projectId); } catch (caught) { error = caught; }
+    try {
+      outcome = await process(task, topic, projectId);
+      notifications = Array.isArray(outcome) ? outcome : outcome?.notifications || [];
+    } catch (caught) { error = caught; }
     await store.update(state => finishTask(state, task, { retry: Boolean(error), notifications }));
     if (error) {
       console.error("scan check", error.message);
@@ -364,7 +372,7 @@ export async function checkNext(topic, projectId, store, {
         action: task.kind === "new" ? "analyze" : "recheck", result: "failed", error: error.message });
     } else {
       await record(projectId, { source_url: task.url, listing_id: task.listingId,
-        action: task.kind === "new" ? "analyze" : "recheck", result: task.kind === "new" ? "processed" : "finished" });
+        action: task.kind === "new" ? "analyze" : "recheck", result: outcome?.scanResult || (task.kind === "new" ? "processed" : "finished"), details: outcome?.details });
     }
     return true;
   });
