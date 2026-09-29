@@ -28,7 +28,8 @@ const scanActions: Record<string, string> = {
   recheck: "Проверка карточки", analyze: "Разбор объявления",
 };
 const scanResults: Record<string, string> = {
-  scanned: "Страница проверена", http_error: "Ошибка HTTP", fetch_error: "Сайт не ответил",
+  started: "Начато", finished: "Завершено",
+  scanned: "Страница проверена", no_listing_links: "Ссылки на объявления не найдены", http_error: "Ошибка HTTP", fetch_error: "Сайт не ответил",
   over_budget: "Выше бюджета", pending: "В очереди на разбор", removed: "Объявление снято",
   price_unknown: "Цена не найдена", price_changed: "Цена изменилась", unchanged: "Без изменений",
   processed: "Карточка обработана", failed: "Разбор не удался",
@@ -116,6 +117,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
           return <article className="scan-entry" key={event.id}>
             <time dateTime={event.created_at}>{time(event.created_at)}</time>
             <div className="scan-entry-main"><div className="scan-entry-label"><strong>{scanActions[event.action] || event.action}</strong><span>{event.projectName}</span></div>
+              <small>{event.details?.agent === "search" || event.action === "search_page" ? "Агент поиска" : "Агент проверки"}</small>
               {url ? <a href={url} target="_blank" rel="noopener noreferrer">{event.source_url}</a> : <span>{event.source_url}</span>}
               {event.error && <p className="scan-error">{event.error}</p>}
               {event.details?.foundCount != null && <small>Найдено: {event.details.foundCount} · добавлено в очередь: {event.details.queuedCount || 0}</small>}

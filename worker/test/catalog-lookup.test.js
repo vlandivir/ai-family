@@ -6,6 +6,10 @@ test("recognizes an exact card request without intercepting an ordinary task", (
   assert.equal(catalogNumberFromMessage("/card 182"), 182);
   assert.equal(catalogNumberFromMessage("№182"), 182);
   assert.equal(catalogNumberFromMessage("покажи карточку №182"), 182);
+  assert.equal(catalogNumberFromMessage("Дай карточку 123"), 123);
+  assert.equal(catalogNumberFromMessage("дай карточку №123"), 123);
+  assert.equal(catalogNumberFromMessage("Дай объект 123"), 123);
+  assert.equal(catalogNumberFromMessage("Дай карточку 123 и сравни её с 124"), null);
   assert.equal(catalogNumberFromMessage("Что думаешь о квартире №182?"), null);
   assert.equal(catalogNumberFromMessage("/card 0"), null);
 });

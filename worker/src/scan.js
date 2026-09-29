@@ -1,30 +1,22 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { dbGet, dbInsert, dbPatch } from "./db.js";
 import { ensureRepo, runListing } from "./queue.js";
 import { sendMessage } from "./telegram/poll.js";
+import { cardText } from "./catalog-lookup.js";
+import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, enqueueTasks, finishTask, searchEveryMs } from "./scan-state.js";
+import { createScanRequestGate } from "./scan-rate-limit.js";
+export { canonicalUrl, dailyAnalysisLimit } from "./scan-state.js";
 
-const dayMs = 24 * 60 * 60 * 1000;
 const statePath = process.env.SCAN_STATE_PATH || "/var/lib/ai-family/scan-state.json";
 
-async function recordScan(projectId, event) {
+export async function recordScan(projectId, event, { insert = dbInsert } = {}) {
   try {
-    await dbInsert("scan_events", { project_id: projectId, ...event, error: event.error ? String(event.error).slice(0, 500) : null });
+    await insert("scan_events", { project_id: projectId, ...event,
+      details: { ...event.details, agent: event.action === "search_page" ? "search" : "checker" },
+      error: event.error ? String(event.error).slice(0, 500) : null });
   } catch (error) {
     console.error("scan log", error.message);
-  }
-}
-
-export function canonicalUrl(value) {
-  try {
-    const url = new URL(value);
-    url.hash = "";
-    url.search = "";
-    url.hostname = url.hostname.replace(/^www\./, "");
-    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/$/, "");
-    return url.toString();
-  } catch {
-    return null;
   }
 }
 
@@ -43,12 +35,15 @@ function offerPrice(node) {
     const price = Number(node.price);
     if (price >= 20000 && price <= 5000000) return Math.round(price);
   }
-  if (node["@graph"]) return offerPrice(node["@graph"]);
+  for (const key of ["@graph", "offers", "mainEntity", "itemOffered"]) {
+    const price = offerPrice(node[key]);
+    if (price) return price;
+  }
   return null;
 }
 
 export function extractPrice(html) {
-  const blocks = html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gi);
+  const blocks = html.matchAll(/<script\b[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
   for (const block of blocks) {
     try {
       const price = offerPrice(JSON.parse(block[1]));
@@ -74,10 +69,10 @@ const listingPatterns = [
 
 export function extractListingUrls(html, baseUrl) {
   const found = new Set();
-  for (const match of html.matchAll(/href="([^"]+)"/gi)) {
+  for (const match of html.matchAll(/\bhref\s*=\s*(["'])(.*?)\1/gi)) {
     let absolute;
     try {
-      absolute = new URL(match[1], baseUrl).toString();
+      absolute = new URL(match[2].replace(/&amp;/gi, "&"), baseUrl).toString();
     } catch {
       continue;
     }
@@ -92,23 +87,7 @@ function today() {
 }
 
 function stale(details, hours) {
-  const checked = details?.availabilityChecked;
-  if (!checked) return true;
-  const then = new Date(`${checked}T00:00:00Z`);
-  return Date.now() - then.getTime() >= hours * 60 * 60 * 1000;
-}
-
-async function readState() {
-  try {
-    return JSON.parse(await readFile(statePath, "utf8"));
-  } catch {
-    return { lastDiscovery: null, pending: [], skipped: [], analyzedOn: null, analyzed: 0 };
-  }
-}
-
-async function writeState(state) {
-  await mkdir(dirname(statePath), { recursive: true });
-  await writeFile(statePath, JSON.stringify(state));
+  return Date.now() - checkedTime(details) >= hours * 60 * 60 * 1000;
 }
 
 async function fetchPage(url) {
@@ -131,284 +110,340 @@ function knownUrls(rows) {
   return urls;
 }
 
-function priceUpdate(details, price, url) {
+function priceUpdate(details, price, url, currentPrice) {
   const history = Array.isArray(details.priceHistory) ? [...details.priceHistory] : [];
   const last = history.at(-1);
-  const changed = !last || last.price !== price;
-  if (changed) {
+  const previous = currentPrice == null ? last?.price ?? null : Number(currentPrice);
+  const changed = previous != null && previous !== price;
+  if (!last && previous != null) {
+    history.push({ date: today(), price: previous, sourceUrl: url, note: "Цена в каталоге до автоматической проверки" });
+  }
+  if (history.at(-1)?.price !== price) {
     history.push({
       date: today(),
       price,
       sourceUrl: url,
-      note: last ? `Было ${last.price.toLocaleString("ru-RU")} €` : "Первая автоматическая проверка",
+      note: changed ? `Было ${previous.toLocaleString("ru-RU")} €` : "Автоматическая проверка",
     });
   }
   return {
     changed,
-    previous: last?.price ?? null,
+    previous,
     details: {
       ...details,
       priceHistory: history,
       availabilityChecked: today(),
+      availabilityCheckedAt: new Date().toISOString(),
       availabilityStatus: "active",
-      availabilityLabel: changed && last ? "Цена изменилась" : "На месте",
-      availabilityNote: changed && last
-        ? `Страница открыта. ${last.price.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €.`
+      availabilityLabel: changed ? "Цена изменилась" : "На месте",
+      availabilityNote: changed
+        ? `Страница открыта. ${previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €.`
         : "Страница открыта, цена без изменений.",
     },
   };
 }
 
-async function recheck(rows, hours, projectId) {
+export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch = dbPatch, record = recordScan } = {}) {
   const due = rows
     .filter((row) => row.source_url && row.status !== "test" && stale(row.details, hours))
-    .sort((a, b) => String(a.details?.availabilityChecked || "").localeCompare(String(b.details?.availabilityChecked || "")))
+    .sort((a, b) => String(a.details?.availabilityCheckedAt || a.details?.availabilityChecked || "").localeCompare(String(b.details?.availabilityCheckedAt || b.details?.availabilityChecked || "")))
     .slice(0, 1);
   const changes = [];
   for (const row of due) {
     let page;
     try {
-      page = await fetchPage(row.source_url);
+      page = await fetch(row.source_url);
     } catch (error) {
       console.error("scan fetch", row.catalog_number, error.message);
       const details = {
         ...(row.details || {}),
         availabilityChecked: today(),
+        availabilityCheckedAt: new Date().toISOString(),
         availabilityLabel: "Сайт не ответил",
         availabilityNote: "Повтор через сутки.",
       };
-      await dbPatch(`listings?id=eq.${row.id}`, { details });
-      await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "fetch_error", error: error.message });
+      await patch(`listings?id=eq.${row.id}`, { details });
+      await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "fetch_error", error: error.message });
       continue;
     }
     const details = { ...(row.details || {}) };
     if (page.status === 404 || page.status === 410) {
       details.availabilityChecked = today();
+      details.availabilityCheckedAt = new Date().toISOString();
       details.availabilityStatus = "removed";
       details.availabilityLabel = "Снято";
       details.availabilityNote = `Страница ответила ${page.status}.`;
-      await dbPatch(`listings?id=eq.${row.id}`, { details });
-      await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "removed", http_status: page.status });
-      changes.push(`№${row.catalog_number || "?"} ${row.address || "без адреса"}: снято`);
+      await patch(`listings?id=eq.${row.id}`, { details });
+      await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "removed", http_status: page.status });
+      changes.push(`Снято с публикации\n${cardText(row)}`);
       continue;
     }
     const price = page.status === 200 ? extractPrice(page.html) : null;
     if (!price) {
       details.availabilityChecked = today();
+      details.availabilityCheckedAt = new Date().toISOString();
       details.availabilityStatus = details.availabilityStatus || "active";
-      details.availabilityLabel = "Проверено";
-      details.availabilityNote = "Страница открылась, цену в разметке не нашёл.";
-      await dbPatch(`listings?id=eq.${row.id}`, { details });
-      await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "price_unknown", http_status: page.status });
+      details.availabilityLabel = page.status === 200 ? "Проверено" : "Сайт недоступен";
+      details.availabilityNote = page.status === 200
+        ? "Страница открылась, цену в разметке не нашёл."
+        : `Страница ответила ${page.status}. Повтор через сутки.`;
+      await patch(`listings?id=eq.${row.id}`, { details });
+      await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: page.status === 200 ? "price_unknown" : "http_error", http_status: page.status });
       continue;
     }
-    const next = priceUpdate(details, price, row.source_url);
-    const patch = { details: next.details };
-    if (next.changed) patch.asking_price_eur = price;
-    await dbPatch(`listings?id=eq.${row.id}`, patch);
-    await recordScan(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: next.changed ? "price_changed" : "unchanged", http_status: page.status, details: { price, previous: next.previous } });
+    const next = priceUpdate(details, price, row.source_url, row.asking_price_eur);
+    const update = { details: next.details, asking_price_eur: price };
+    await patch(`listings?id=eq.${row.id}`, update);
+    await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: next.changed ? "price_changed" : "unchanged", http_status: page.status, details: { price, previous: next.previous } });
     if (next.changed && next.previous != null) {
-      changes.push(`№${row.catalog_number || "?"} ${row.address || "без адреса"}: ${next.previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €`);
+      changes.push(`Цена изменилась: ${next.previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €\n${cardText({ ...row, asking_price_eur: price })}`);
     }
   }
   return changes;
 }
 
-function searchEntry(entry) {
-  if (typeof entry === "string") return { url: entry, maxPriceEur: 200000 };
-  if (!entry?.url) return null;
-  return { url: entry.url, maxPriceEur: entry.maxPriceEur || 200000 };
+export async function readSearches(dir) {
+  const config = JSON.parse(await readFile(join(dir, "scan.json"), "utf8"));
+  return (config.searches || []).map(entry => typeof entry === "string" ? { url: entry } : entry)
+    .filter(entry => entry?.url)
+    .map(entry => ({ ...entry, maxPriceEur: entry.maxPriceEur || 200000 }));
 }
 
-async function readSearches(dir) {
-  try {
-    const config = JSON.parse(await readFile(join(dir, "scan.json"), "utf8"));
-    return {
-      searches: (config.searches || []).map(searchEntry).filter(Boolean),
-    };
-  } catch {
-    return { searches: [] };
+export async function readListings(projectId, get = dbGet) {
+  const rows = [];
+  for (let offset = 0; ; offset += 1000) {
+    const page = await get(`listings?project_id=eq.${projectId}&status=not.in.(error,test)&select=id,catalog_number,address,neighborhood,municipality,status,source_url,source_urls,asking_price_eur,details&order=id.asc&limit=1000&offset=${offset}`);
+    rows.push(...page);
+    if (page.length < 1000) return rows;
   }
 }
 
-function queuedUrl(item) {
-  if (typeof item === "string" && item.startsWith("{")) {
-    try {
-      return JSON.parse(item);
-    } catch {
-      return { url: item, maxPriceEur: 200000 };
+export function catalogTasks(rows) {
+  return rows.filter(row => row.source_url || row.source_urls?.some(Boolean))
+    .sort((a, b) => checkedTime(a.details) - checkedTime(b.details))
+    .map(row => ({ kind: "existing", listingId: row.id, url: row.source_url || row.source_urls.find(Boolean),
+      sourceUrls: row.source_urls || [], availableAt: checkedTime(row.details) ? checkedTime(row.details) + dayMs : 0 }));
+}
+
+// Follow pagination only within the configured search, preserving all its filters.
+export function paginationUrls(html, baseUrl) {
+  const base = new URL(baseUrl);
+  const found = new Set();
+  for (const match of html.matchAll(/<(?:a|link)\b[^>]*>/gi)) {
+    const href = match[0].match(/\bhref\s*=\s*(["'])(.*?)\1/i)?.[2];
+    if (!href) continue;
+    let target;
+    try { target = new URL(href.replace(/&amp;/gi, "&"), base); } catch { continue; }
+    if (target.origin !== base.origin || target.pathname !== base.pathname) continue;
+    const keys = new Set([...base.searchParams.keys(), ...target.searchParams.keys()]);
+    let pageChanged = false, sameFilters = true;
+    for (const key of keys) {
+      if (/^(page|strana|stranica|pagenumber)$/i.test(key)) {
+        pageChanged ||= target.searchParams.get(key) !== base.searchParams.get(key);
+      } else if (base.searchParams.getAll(key).join("\0") !== target.searchParams.getAll(key).join("\0")) sameFilters = false;
+    }
+    if (pageChanged && sameFilters) {
+      target.hash = "";
+      found.add(target.toString());
     }
   }
-  if (typeof item === "string") return { url: item, maxPriceEur: 200000 };
-  return item;
+  return [...found];
 }
 
-async function peekOne(rows, state, projectId) {
+export function searchDue(state, now = Date.now()) {
+  const last = Date.parse(state.lastDiscovery);
+  return Boolean(state.searchRun) || !Number.isFinite(last) || now - last >= searchEveryMs;
+}
+
+export async function recoverScanJobs(projectId, { get = dbGet, patch = dbPatch } = {}) {
+  const jobs = await get(`agent_jobs?source=eq.scan&project_id=eq.${projectId}&status=eq.running&select=id`);
+  for (const job of jobs) {
+    await patch(`agent_jobs?id=eq.${job.id}&source=eq.scan&status=eq.running`, {
+      status: "failed", finished_at: new Date().toISOString(),
+      error: "Фоновая проверка прервана перезапуском; объект остаётся в очереди для проверки через 24 часа",
+    });
+  }
+}
+
+export async function searchSweep(topic, projectId, store, {
+  repo = ensureRepo, searches = readSearches, listings = readListings, fetch = fetchPage,
+  record = recordScan, now = Date.now, stopped = () => false, wake = () => {},
+  request = operation => operation(),
+} = {}) {
+  const state = await store.read();
+  if (!searchDue(state, now()) || stopped()) return false;
+  if (!state.searchRun) {
+    const dir = await repo(topic.repo, `scan:${topic.project}:search`);
+    const entries = await searches(dir);
+    await store.update(current => {
+      current.lastDiscovery = new Date(now()).toISOString();
+      current.searchRun = { remaining: entries, visited: [] };
+    });
+  }
+  const rows = await listings(projectId);
   const known = knownUrls(rows);
-  const skipped = new Set(state.skipped || []);
-  const pending = [...(state.pending || [])];
-  const queue = [...(state.queue || [])];
-  const next = queuedUrl(queue.shift());
-  if (!next?.url) return state;
-  if (known.has(next.url) || skipped.has(next.url) || pending.includes(next.url)) {
-    return { ...state, queue };
-  }
-  let price = null;
-  let httpStatus = null;
-  let fetchError = null;
-  try {
-    const page = await fetchPage(next.url);
-    httpStatus = page.status;
-    if (page.status === 200) price = extractPrice(page.html);
-  } catch (error) {
-    console.error("scan peek", error.message);
-    fetchError = error.message;
-  }
-  const overBudget = price != null && price > next.maxPriceEur;
-  if (overBudget) skipped.add(next.url);
-  else pending.push(next.url);
-  await recordScan(projectId, { source_url: next.url, action: "candidate", result: fetchError ? "fetch_error" : overBudget ? "over_budget" : "pending", http_status: httpStatus, error: fetchError, details: { price, maxPriceEur: next.maxPriceEur } });
-  return {
-    ...state,
-    queue,
-    pending: pending.slice(0, 20),
-    skipped: [...skipped].slice(-500),
-  };
-}
-
-async function readOneSearch(dir, rows, state, projectId) {
-  const { searches } = await readSearches(dir);
-  if (!searches.length) return state;
-  const cursor = state.searchCursor || 0;
-  const entry = searches[cursor % searches.length];
-  const url = entry.url;
-  const maxPrice = entry.maxPriceEur;
-  let page;
-  try {
-    page = await fetchPage(url);
-  } catch (error) {
-    console.error("scan search", error.message);
-    await recordScan(projectId, { source_url: url, action: "search_page", result: "fetch_error", error: error.message });
-    return { ...state, searchCursor: cursor + 1 };
-  }
-  const known = knownUrls(rows);
-  const skipped = new Set(state.skipped || []);
-  const pending = new Set(state.pending || []);
-  const queue = new Set(state.queue || []);
-  let foundCount = 0;
-  let queuedCount = 0;
-  if (page.status === 200) {
-    const foundUrls = extractListingUrls(page.html, url);
-    foundCount = foundUrls.length;
-    for (const found of foundUrls) {
-      if (!known.has(found) && !skipped.has(found) && !pending.has(found)) {
-        const size = queue.size;
-        queue.add(JSON.stringify({ url: found, maxPriceEur: maxPrice }));
-        if (queue.size > size) queuedCount += 1;
-      }
+  while (!stopped()) {
+    const current = await store.read();
+    const entry = current.searchRun?.remaining[0];
+    if (!entry) {
+      await store.update(value => { value.searchRun = null; });
+      return true;
     }
+    let page, error;
+    await request(async () => {
+      await record(projectId, { source_url: entry.url, action: "search_page", result: "started" });
+      try { page = await fetch(entry.url); } catch (caught) { error = caught; }
+    });
+    const found = page?.status === 200 ? extractListingUrls(page.html, entry.url) : [];
+    const pages = page?.status === 200 ? paginationUrls(page.html, entry.url) : [];
+    const queuedCount = await store.update(value => {
+      const before = value.queue.length;
+      enqueueTasks(value, found.filter(url => !known.has(url)).map(url => ({
+        kind: "new", url, maxPriceEur: entry.maxPriceEur, scenario: entry.scenario,
+      })));
+      const run = value.searchRun;
+      run.remaining.shift();
+      run.visited.push(entry.url);
+      const seen = new Set([...run.visited, ...run.remaining.map(item => item.url)]);
+      for (const url of pages) if (!seen.has(url)) { run.remaining.push({ ...entry, url }); seen.add(url); }
+      return value.queue.length - before;
+    });
+    wake();
+    await record(projectId, { source_url: entry.url, action: "search_page",
+      result: error ? "fetch_error" : page.status !== 200 ? "http_error" : found.length ? "scanned" : "no_listing_links",
+      http_status: page?.status, error: error?.message, details: { foundCount: found.length, queuedCount } });
   }
-  await recordScan(projectId, { source_url: url, action: "search_page", result: page.status === 200 ? "scanned" : "http_error", http_status: page.status, details: { foundCount, queuedCount } });
-  return {
-    ...state,
-    searchCursor: cursor + 1,
-    queue: [...queue].slice(0, 100),
-  };
+  return true;
 }
 
-async function analyzeOne(topic, state, projectId) {
-  const limit = 3;
-  if (state.analyzedOn !== today()) {
-    state.analyzedOn = today();
-    state.analyzed = 0;
+export async function checkTask(task, topic, projectId, {
+  get = dbGet, check = recheck, analyze = runListing, now = Date.now,
+} = {}) {
+  if (task.kind === "existing") {
+    const row = (await get(`listings?id=eq.${task.listingId}&select=*`))[0];
+    if (!row || row.status === "test" || now() - checkedTime(row.details) < dayMs) return [];
+    return check([{ ...row, source_url: row.source_url || task.url }], 24, projectId);
   }
-  if (!state.pending?.length || state.analyzed >= limit) return state;
-  const url = state.pending[0];
-  const message = {
-    inGroup: false,
-    chatId: 0,
-    userId: "scan:belgrade",
-    text: url,
-    filePaths: [],
-  };
-  try {
-    const prose = await runListing(message, "scan:belgrade", topic, url);
-    state.pending.shift();
-    state.analyzed += 1;
-    const topicChat = (await dbGet("conversations?kind=eq.topic&telegram_topic_id=eq.28&select=telegram_chat_id,telegram_topic_id&limit=1"))[0];
-    if (topicChat) await sendMessage(topicChat.telegram_chat_id, prose || `Новая карточка: ${url}`, topicChat.telegram_topic_id);
-    await recordScan(projectId, { source_url: url, action: "analyze", result: "processed" });
-  } catch (error) {
-    console.error("scan analyze", error.message);
-    await recordScan(projectId, { source_url: url, action: "analyze", result: "failed", error: error.message });
-    state.pending.shift();
-    state.skipped = [...(state.skipped || []), url].slice(-500);
-  }
-  return state;
+  // Do not pre-fetch a new listing: its dedicated agent opens it once and does the complete analysis.
+  const key = `scan:${topic.project}:check`;
+  const message = { inGroup: false, chatId: 0, userId: key, text: task.url, filePaths: [] };
+  const prose = await analyze(message, key, { ...topic, scan: {
+    checkedAt: task.checkedAt, maxPriceEur: task.maxPriceEur || 200000, scenario: task.scenario,
+  } }, task.url);
+  return [prose || `Новая карточка: ${task.url}`];
 }
 
-export function nextScanAction(state, date = today()) {
-  if (state.pending?.length && (state.analyzedOn !== date || (state.analyzed || 0) < 3)) return "analyze";
-  if (state.queue?.length) return "candidate";
-  return "search_page";
+export async function sendScanNotifications(store, { get = dbGet, send = sendMessage } = {}) {
+  const state = await store.read();
+  if (!state.notifications.length) return;
+  const chat = (await get("conversations?kind=eq.topic&telegram_topic_id=eq.28&select=telegram_chat_id,telegram_topic_id&limit=1"))[0];
+  if (!chat) return;
+  for (const notification of state.notifications) {
+    await send(chat.telegram_chat_id, notification, chat.telegram_topic_id);
+    await store.update(current => { current.notifications.shift(); });
+  }
 }
 
-export async function scanOnce(topic) {
-  const project = (await dbGet(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0];
-  if (!project) return;
-  const rows = await dbGet(
-    `listings?project_id=eq.${project.id}&status=neq.error&select=id,catalog_number,address,status,source_url,source_urls,asking_price_eur,details&order=catalog_number.asc&limit=1000`,
-  );
-  const dir = await ensureRepo(topic.repo, "scan:belgrade");
-  const changes = await recheck(rows, 24, project.id);
-  if (changes.length || rows.some((row) => row.source_url && row.status !== "test" && stale(row.details, 24))) {
-    if (changes.length) {
-      const topicChat = (await dbGet("conversations?kind=eq.topic&telegram_topic_id=eq.28&select=telegram_chat_id,telegram_topic_id&limit=1"))[0];
-      if (topicChat) await sendMessage(topicChat.telegram_chat_id, ["Проверка цен", ...changes].join("\n"), topicChat.telegram_topic_id);
+export async function checkNext(topic, projectId, store, {
+  process = checkTask, record = recordScan, now = Date.now,
+  request = operation => operation(),
+} = {}) {
+  // Do not reserve a minute or mark an object checked when no task is ready.
+  if (!claimTask(await store.read(), now())) return false;
+  return request(async () => {
+    const task = await store.update(state => claimTask(state, now()));
+    if (!task) return false;
+    let notifications = [], error;
+    await record(projectId, { source_url: task.url, listing_id: task.listingId,
+      action: task.kind === "new" ? "analyze" : "recheck", result: "started" });
+    try { notifications = await process(task, topic, projectId); } catch (caught) { error = caught; }
+    await store.update(state => finishTask(state, task, { retry: Boolean(error), notifications }));
+    if (error) {
+      console.error("scan check", error.message);
+      await record(projectId, { source_url: task.url, listing_id: task.listingId,
+        action: task.kind === "new" ? "analyze" : "recheck", result: "failed", error: error.message });
+    } else {
+      await record(projectId, { source_url: task.url, listing_id: task.listingId,
+        action: task.kind === "new" ? "analyze" : "recheck", result: task.kind === "new" ? "processed" : "finished" });
     }
-    return;
-  }
-  let state = await readState();
-  const action = nextScanAction(state);
-  if (action === "analyze") {
-    state = await analyzeOne(topic, state, project.id);
-  } else if (action === "candidate") {
-    state = await peekOne(rows, state, project.id);
-  } else {
-    state = await readOneSearch(dir, rows, state, project.id);
-  }
-  await writeState(state);
+    return true;
+  });
 }
 
-export function startScan({ busy }) {
-  let running = false;
+export function startScan({
+  get = dbGet, patch = dbPatch, loadTopic = async () => {
+    const topics = JSON.parse(await readFile(new URL("../config/topics.json", import.meta.url), "utf8"));
+    return Object.values(topics.topics || {}).find(item => item?.project === "belgrade-apartments");
+  },
+  store = createScanStore(statePath), listings = readListings, search = searchSweep,
+  next = checkNext, notify = sendScanNotifications, now = Date.now,
+  idleMs = 60_000,
+  request,
+} = {}) {
   let stopping = false;
-  let runningPromise;
-  const tick = () => {
-    if (stopping || running || busy()) return;
-    running = true;
-    runningPromise = (async () => {
+  const shutdown = new AbortController();
+  request ??= createScanRequestGate(store, { now, signal: shutdown.signal });
+  let generation = 0;
+  const waiters = new Set();
+  const wake = () => { generation++; for (const resolve of [...waiters]) resolve(); };
+  const wait = observed => new Promise(resolve => {
+    const done = () => { clearTimeout(timer); waiters.delete(done); resolve(); };
+    const timer = setTimeout(done, idleMs);
+    waiters.add(done);
+    if (stopping || observed !== generation) done();
+  });
+  let topic, projectId;
+  const ready = (async () => {
+    while (!stopping) {
+      const observed = generation;
       try {
-        const topics = JSON.parse(await readFile(new URL("../config/topics.json", import.meta.url), "utf8"));
-        const topic = Object.values(topics.topics || {}).find((item) => item?.project === "belgrade-apartments");
-        if (topic) await scanOnce(topic);
+        topic = await loadTopic();
+        if (!topic) return;
+        projectId = (await get(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0]?.id;
+        if (!projectId) throw new Error("Проект фонового обхода не найден");
+        await store.read();
+        await recoverScanJobs(projectId, { get, patch });
+        return;
       } catch (error) {
-        console.error("scan", error.message);
-      } finally {
-        running = false;
+        if (!stopping) console.error("scan startup", error.message);
       }
-    })();
-    return runningPromise;
-  };
-  const initialTimer = setTimeout(tick, 20_000);
-  const timer = setInterval(tick, Number(process.env.SCAN_EVERY_MS || 15 * 60 * 1000));
-  timer.unref?.();
+      await wait(observed);
+    }
+  })();
+  const checker = (async () => {
+    await ready;
+    if (!projectId) return;
+    let lastRefresh = -Infinity;
+    while (!stopping) {
+      const observed = generation;
+      try {
+        if (now() - lastRefresh >= idleMs) {
+          const rows = await listings(projectId);
+          await store.update(state => enqueueTasks(state, catalogTasks(rows)));
+          lastRefresh = now();
+        }
+        try { await notify(store); } catch (error) { console.error("scan notify", error.message); }
+        if (stopping) break;
+        if (await next(topic, projectId, store, { now, request })) continue;
+      } catch (error) { if (!stopping) console.error("scan checker", error.message); }
+      await wait(observed);
+    }
+  })();
+  const searcher = (async () => {
+    await ready;
+    if (!projectId) return;
+    while (!stopping) {
+      const observed = generation;
+      try { await search(topic, projectId, store, { stopped: () => stopping, wake, now, request }); }
+      catch (error) { if (!stopping) console.error("scan searcher", error.message); }
+      if (!stopping) await wait(observed);
+    }
+  })();
+  // Attach handlers immediately; readiness errors must not become unhandled rejections.
+  const running = Promise.allSettled([checker, searcher]);
+  void ready.catch(error => console.error("scan startup", error.message));
   return {
-    stop() {
-      stopping = true;
-      clearTimeout(initialTimer);
-      clearInterval(timer);
-      return runningPromise || Promise.resolve();
-    },
+    ready,
+    stop() { stopping = true; shutdown.abort(); wake(); return running; },
   };
 }

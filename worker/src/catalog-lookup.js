@@ -12,12 +12,12 @@ const statuses = {
 
 export function catalogNumberFromMessage(text) {
   const value = String(text || "").trim();
-  const match = value.match(/^(?:\/(?:card|object|карточк[ау]|объект)(?:@\w+)?\s+|(?:№|#)\s*|(?:покажи\s+)?(?:карточк[ау]|объект)\s*(?:№\s*)?)(\d{1,9})$/i);
+  const match = value.match(/^(?:\/(?:card|object|карточк[ау]|объект)(?:@\w+)?\s+|(?:№|#)\s*|(?:(?:покажи|дай)\s+)?(?:карточк[ау]|объект)\s*(?:№\s*)?)(\d{1,9})$/i);
   const number = Number(match?.[1]);
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
-function cardText(row, project, showProject) {
+export function cardText(row, project, showProject = false) {
   const price = row.asking_price_eur == null
     ? "не указана"
     : `${Number(row.asking_price_eur).toLocaleString("ru-RU")} €`;

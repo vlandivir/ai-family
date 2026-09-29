@@ -8,6 +8,7 @@ import { dbGet, dbInsert, dbPatch } from "./db.js";
 import { getChatId } from "./agent/sessions.js";
 import { retryableJobError } from "./agent/jobs.js";
 import { runAgent } from "./agent/run.js";
+import { cardText } from "./catalog-lookup.js";
 
 const git = promisify(execFile);
 const repoRoot = process.env.PROJECT_REPOS_DIR || "/var/lib/ai-family/repos";
@@ -196,13 +197,20 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
   }
 }
 
-export async function runListing(message, sessionKey, topic, url, queuedJob) {
-  const conversation = await openConversation(message, sessionKey);
-  const project = (await dbGet(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0];
-  const dir = await ensureRepo(topic.repo, sessionKey);
+export async function runListing(message, sessionKey, topic, url, queuedJob, {
+  get = dbGet, insert = dbInsert, patch = dbPatch, repo = ensureRepo,
+  open = openConversation, agent = runAgent,
+} = {}) {
+  const scan = topic.scan;
+  const conversation = await open(message, sessionKey);
+  const project = (await get(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0];
+  const dir = await repo(topic.repo, sessionKey);
   const prompt = [
     topic.rule,
     `Ссылка: ${url}`,
+    scan?.scenario ? `Сценарий поиска: ${scan.scenario}. Оцени объект по этому сценарию.` : "",
+    scan?.maxPriceEur ? `Бюджет поиска: не больше ${scan.maxPriceEur} EUR. Укажи достоверную цену в asking_price_eur.` : "",
+    scan ? "Во время фонового разбора делай запросы к сайтам не чаще одного раза в 60 секунд. Объявление открывай один раз, повторные запросы к нему в этом разборе не делай." : "",
     "Прочитай APARTMENT_SELECTION_INSTRUCTIONS.md в текущей папке и открой ссылку.",
     "Сначала реши, это страница одного объявления о квартире или доме.",
     "Витрина, каталог, поиск, статья и наша собственная страница — не объявление.",
@@ -213,7 +221,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
     "Один и тот же объект объединяй, даже если ссылка отличается параметрами.",
     "Сверяй адрес, дом, площадь и площадку, не полную строку URL.",
     "Уже известные карточки:",
-    await knownListings(project.id),
+    await knownListings(project.id, get),
     "Если это уже известный объект, поставь его id в match_id. Иначе match_id оставь null.",
     "Borča, Mirijevo, Karaburma и блоки 71–72 не причина пропускать объявление. Карточку всё равно заполни, район напиши в neighborhood.",
     message.filePaths?.length ? `К сообщению приложены файлы. Прочитай их вместе со страницей:\n${message.filePaths.map((path) => `- ${path}`).join("\n")}` : "",
@@ -224,10 +232,10 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
     '{"is_listing":true,"category":"rental","match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
     "<<<END>>>",
   ].join("\n");
-  const inserted = queuedJob ? [queuedJob] : await dbInsert("agent_jobs", {
+  const inserted = queuedJob ? [queuedJob] : await insert("agent_jobs", {
     conversation_id: conversation.id,
     project_id: project?.id,
-    source: "telegram",
+    source: scan ? "scan" : "telegram",
     external_user_id: message.userId,
     kind: "analyze_listing",
     payload: { text: message.text, url },
@@ -237,13 +245,13 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
   });
   const job = inserted[0];
   try {
-    const { text, chatId, model } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, dir);
+    const { text, chatId, model } = await agent(sessionKey, prompt, conversation.cursor_chat_id, dir);
     if (chatId && chatId !== conversation.cursor_chat_id) {
-      await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
+      await patch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
     const { prose, card } = cardFromAnswer(text);
     if (card?.is_listing === false) {
-      await dbPatch(`agent_jobs?id=eq.${job.id}`, {
+      await patch(`agent_jobs?id=eq.${job.id}`, {
         status: "succeeded",
         finished_at: new Date().toISOString(),
         model,
@@ -251,9 +259,26 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
       });
       return prose || "Это не страница объявления.";
     }
-    const known = await dbGet(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
-    const match = known.find((item) => item.id === card?.match_id);
+    if (scan && (!card || typeof card !== "object" || Array.isArray(card) || !shouldUpsertListing(card))) {
+      const error = new Error("Агент не вернул JSON карточки объявления");
+      error.code = "SCAN_NO_CARD";
+      throw error;
+    }
+    const price = numberOrNull(card?.asking_price_eur);
+    if (scan && price != null && Number.isFinite(scan.maxPriceEur) && price > scan.maxPriceEur) {
+      await patch(`agent_jobs?id=eq.${job.id}`, {
+        status: "succeeded", finished_at: new Date().toISOString(), model,
+        result: { text: prose, scanResult: "over_budget", price, maxPriceEur: scan.maxPriceEur },
+      });
+      return prose || `Цена ${price} EUR превышает бюджет ${scan.maxPriceEur} EUR.`;
+    }
+    const known = await get(`listings?project_id=eq.${project.id}&select=id,source_url,source_urls`);
+    const canonical = comparableListingUrl(url);
+    const match = known.find((item) => item.id === card?.match_id)
+      || (scan && known.find((item) => canonical && [item.source_url, ...(Array.isArray(item.source_urls) ? item.source_urls : [])]
+        .some((value) => comparableListingUrl(value) === canonical)));
     const row = listingRow(project.id, url, card, prose);
+    let priceNotification;
     const banned = districtExclusion(row.address, row.neighborhood);
     if (banned) {
       row.status = "excluded";
@@ -265,25 +290,31 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
       delete row.project_id;
       if (!banned) delete row.status;
       if (row.details) {
-        const current = await dbGet(`listings?id=eq.${match.id}&select=details`);
+        const current = await get(`listings?id=eq.${match.id}&select=details,asking_price_eur,catalog_number,address,neighborhood,municipality,status`);
         row.details = { ...(current[0]?.details || {}), ...row.details };
+        if (scan) row.details = scannedDetails(row.details, row.asking_price_eur, url, scan.checkedAt, current[0]?.asking_price_eur);
+        const previous = numberOrNull(current[0]?.asking_price_eur);
+        if (scan && previous != null && row.asking_price_eur != null && previous !== row.asking_price_eur) {
+          priceNotification = `Цена изменилась: ${previous.toLocaleString("ru-RU")} € → ${row.asking_price_eur.toLocaleString("ru-RU")} €\n${cardText({ ...current[0], ...row })}`;
+        }
       }
-      await dbPatch(`listings?id=eq.${match.id}`, row);
+      await patch(`listings?id=eq.${match.id}`, row);
     } else {
       row.source_urls = [url];
-      await dbInsert("listings", row);
+      if (scan) row.details = scannedDetails(row.details, row.asking_price_eur, url, scan.checkedAt);
+      await insert("listings", row);
     }
-    await dbPatch(`agent_jobs?id=eq.${job.id}`, {
+    await patch(`agent_jobs?id=eq.${job.id}`, {
       status: card ? "succeeded" : "failed",
       finished_at: new Date().toISOString(),
       model,
       result: { text: prose },
       error: card ? null : "no card json",
     });
-    return prose || "Карточка записана, но текст оценки пустой.";
+    return priceNotification || prose || "Карточка записана, но текст оценки пустой.";
   } catch (error) {
-    if (retryableJobError(job, error)) throw error;
-    await dbInsert("listings", {
+    if (!scan && retryableJobError(job, error)) throw error;
+    if (!scan) await insert("listings", {
       project_id: project.id,
       status: "error",
       city: "Belgrade",
@@ -291,7 +322,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
       fit: "не разобрано",
       notes: safeError(error),
     });
-    await dbPatch(`agent_jobs?id=eq.${job.id}`, {
+    await patch(`agent_jobs?id=eq.${job.id}`, {
       status: "failed",
       finished_at: new Date().toISOString(),
       model: error.model || null,
@@ -301,8 +332,8 @@ export async function runListing(message, sessionKey, topic, url, queuedJob) {
   }
 }
 
-async function knownListings(projectId) {
-  const rows = await dbGet(
+async function knownListings(projectId, get = dbGet) {
+  const rows = await get(
     `listings?project_id=eq.${projectId}&status=neq.error&select=id,catalog_number,address,neighborhood,area_m2,source_url,source_urls&order=created_at.desc&limit=40`,
   );
   if (!rows.length) return "нет";
@@ -314,6 +345,37 @@ async function knownListings(projectId) {
       return `№${row.catalog_number ?? "—"} | ${row.id} | ${row.address || ""} | ${row.neighborhood || ""} | ${row.area_m2 ?? ""} | ${urls.filter(Boolean).join(" ")}`;
     })
     .join("\n");
+}
+
+function comparableListingUrl(value) {
+  try {
+    const url = new URL(value);
+    url.search = "";
+    url.hash = "";
+    url.hostname = url.hostname.replace(/^www\./, "");
+    url.pathname = url.pathname.replace(/\/$/, "") || "/";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function scannedDetails(details, price, url, checkedAt, previousPrice) {
+  const stamp = Number.isFinite(Date.parse(checkedAt)) ? new Date(checkedAt).toISOString() : new Date().toISOString();
+  const date = stamp.slice(0, 10);
+  const history = Array.isArray(details.priceHistory) ? [...details.priceHistory] : [];
+  const previous = numberOrNull(previousPrice);
+  if (!history.length && previous != null) {
+    history.push({ date, price: previous, sourceUrl: url, note: "Цена в каталоге до автоматической проверки" });
+  }
+  if (price != null && history.at(-1)?.price !== price) {
+    history.push({ date, price, sourceUrl: url, note: "Автоматический разбор объявления" });
+  }
+  return {
+    ...details, availabilityChecked: date, availabilityCheckedAt: stamp,
+    availabilityStatus: "active", availabilityLabel: "Проверено",
+    ...(history.length ? { priceHistory: history } : {}),
+  };
 }
 
 function mergeUrls(match, url) {

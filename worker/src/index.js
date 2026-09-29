@@ -3,7 +3,6 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { retryableJobError, startTelegramJobs } from "./agent/jobs.js";
-import { agentBusy } from "./agent/run.js";
 import { catalogNumberFromMessage, lookupCatalogNumber } from "./catalog-lookup.js";
 import { dbInsert, dbPatch } from "./db.js";
 import { startHeartbeat } from "./health.js";
@@ -121,7 +120,7 @@ async function processTelegramJob(job) {
   }
 }
 
-const scan = startScan({ busy: agentBusy });
+const scan = startScan();
 const jobs = startTelegramJobs({
   processJob: processTelegramJob,
   notifyInterrupted: (message) => sendMessage(
