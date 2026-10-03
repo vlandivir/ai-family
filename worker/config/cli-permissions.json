@@ -13,6 +13,9 @@
       "Write(**)"
     ],
     "deny": [
+      "Mcp(vlandivir:threads_create)",
+      "Mcp(vlandivir:threads_update)",
+      "Mcp(vlandivir:threads_publish)",
       "Shell(rm)",
       "Read(.env*)",
       "Read(**/.env*)",

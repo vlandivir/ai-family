@@ -27,6 +27,7 @@ jobs:
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci --prefix dashboard --ignore-scripts
+      - run: npm test --prefix dashboard
       - name: Build dashboard with test configuration
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co

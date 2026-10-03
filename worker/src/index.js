@@ -9,7 +9,7 @@ import { startHeartbeat } from "./health.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
 import { archiveAttachments, materializeObject, safeFileName } from "./storage.js";
-import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, prepareOwnerMcpWorkspace } from "./owner-mcp.js";
+import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, ownerThreadsReplyRule, prepareOwnerMcpWorkspace } from "./owner-mcp.js";
 import { poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
 import { splitVoiceAnswer, storedVoicePaths, transcribeVoice, voiceInstruction } from "./voice.js";
 
@@ -89,7 +89,10 @@ async function processTelegramJob(job) {
   const retryRule = job.attempts > 1
     ? "Предыдущий запуск этой задачи прервался. Продолжи в том же контексте: сначала проверь уже сделанные изменения и не повторяй завершённые действия."
     : "";
-  const taskTopic = retryRule ? { ...topic, rule: [topic.rule, retryRule].filter(Boolean).join("\n\n") } : topic;
+  const taskTopic = {
+    ...topic,
+    rule: [ownerMcp ? ownerThreadsReplyRule : "", topic.rule, retryRule].filter(Boolean).join("\n\n"),
+  };
   try {
     await queuedReactions.get(job.id);
     try {

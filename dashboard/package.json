@@ -2,6 +2,7 @@
   "name": "ai-family-status",
   "private": true,
   "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start"

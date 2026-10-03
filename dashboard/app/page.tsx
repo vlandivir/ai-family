@@ -64,7 +64,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
   const user = await allowedUser();
   if (!user) return <main className="gate"><div className="gate-card"><div className="brand-mark">◈</div><p className="eyebrow">AI FAMILY / МОНИТОРИНГ</p><h1>Работа семьи<br />в одном месте.</h1><p className="gate-desc">Войдите через разрешённый Google аккаунт, чтобы видеть состояние всех задач и диалогов.</p><a className="google-button" href="/auth/login"><span className="google-g">G</span> Войти через Google <span aria-hidden>↗</span></a><p className="gate-note">Доступ есть только у адресов из настроек.</p></div></main>;
 
-  const { branches, scanEvents, totalJobs, updatedAt } = await dashboardData();
+  const { branches, scanEvents, totalJobs, updatedAt } = await dashboardData(user.email!);
   const mediaReady = Boolean(process.env.HETZNER_S3_ENDPOINT && process.env.HETZNER_S3_BUCKET &&
     process.env.HETZNER_S3_ACCESS_KEY && process.env.HETZNER_S3_SECRET_KEY);
   const { chat } = await searchParams;

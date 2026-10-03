@@ -1,4 +1,5 @@
 import "server-only";
+import { canViewConversation } from "./visibility";
 
 type Conversation = {
   id: string; project_id: string | null; kind: "private" | "topic";
@@ -49,21 +50,34 @@ async function allRows<T>(path: string): Promise<T[]> {
   }
 }
 
-export async function dashboardData() {
-  const [conversations, projects, jobs, scanEvents] = await Promise.all([
+export async function dashboardData(viewerEmail: string) {
+  const [conversations, projects, scanEvents] = await Promise.all([
     allRows<Conversation>("conversations?select=id,project_id,kind,telegram_chat_id,telegram_topic_id,opened_by,started_at,closed_at&order=started_at.desc"),
     allRows<Project>("projects?select=id,name,slug"),
-    allRows<Job>("agent_jobs?source=eq.telegram&select=id,conversation_id,created_at,started_at,finished_at,status,attempts,model,error,external_user_id,payload,result,artifacts&order=created_at.desc"),
     rows<ScanEvent>("scan_events?select=id,project_id,listing_id,created_at,source_url,action,result,http_status,error,details&order=created_at.desc&limit=100"),
   ]);
+  const visibleConversations = conversations.filter((conversation) => canViewConversation(
+    conversation, viewerEmail,
+    process.env.PRIVATE_CHAT_OWNER_EMAIL,
+    process.env.PRIVATE_CHAT_OWNER_USER_ID,
+  ));
+  const visibleIds = new Set(visibleConversations.map((conversation) => conversation.id));
+  const chunks: string[][] = [];
+  for (let index = 0; index < visibleConversations.length; index += 50) {
+    chunks.push(visibleConversations.slice(index, index + 50).map((conversation) => conversation.id));
+  }
+  const jobs = (await Promise.all(chunks.map((ids) => allRows<Job>(
+    `agent_jobs?source=eq.telegram&conversation_id=in.(${ids.join(",")})&select=id,conversation_id,created_at,started_at,finished_at,status,attempts,model,error,external_user_id,payload,result,artifacts&order=created_at.desc`,
+  )))).flat().sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const visibleJobs = jobs.filter((job) => visibleIds.has(job.conversation_id));
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const jobsByConversation = new Map<string, Job[]>();
-  for (const job of jobs) {
+  for (const job of visibleJobs) {
     const list = jobsByConversation.get(job.conversation_id) || [];
     list.push(job);
     jobsByConversation.set(job.conversation_id, list);
   }
-  const branches = conversations.map((conversation) => {
+  const branches = visibleConversations.map((conversation) => {
     const branchJobs = jobsByConversation.get(conversation.id) || [];
     const active = branchJobs.find((job) => job.status === "running");
     const queued = branchJobs.filter((job) => job.status === "queued");
@@ -83,7 +97,7 @@ export async function dashboardData() {
   return {
     branches,
     scanEvents: scanEvents.map((event) => ({ ...event, projectName: projectById.get(event.project_id)?.name || "Проект" })),
-    totalJobs: jobs.length,
+    totalJobs: visibleJobs.length,
     updatedAt: new Date().toISOString(),
   };
 }

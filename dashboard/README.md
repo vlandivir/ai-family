@@ -1,6 +1,6 @@
 # AI Family · статусы задач
 
-Отдельный Next.js сайт для всех личных диалогов и тем Telegram. Слева список веток, справа сообщения и сохранённые ответы агента по порядку, вместе с состоянием каждой задачи. Обновляется каждые 10 секунд.
+Отдельный Next.js сайт для диалогов и тем Telegram. Слева список доступных веток, справа сообщения и сохранённые ответы агента по порядку, вместе с состоянием каждой задачи. Личный диалог владельца и его вложения доступны только его Google-аккаунту; темы группы видят остальные разрешённые аккаунты. Обновляется каждые 10 секунд.
 
 Во время обработки показывается прошедшее время. Если задача остаётся в работе более 12 минут, сайт помечает её как задержанную вместо обычного состояния «в работе».
 
@@ -19,6 +19,8 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 ALLOWED_EMAILS=
+PRIVATE_CHAT_OWNER_EMAIL=
+PRIVATE_CHAT_OWNER_USER_ID=
 HETZNER_S3_ENDPOINT=
 HETZNER_S3_BUCKET=
 HETZNER_S3_ACCESS_KEY=
@@ -28,6 +30,8 @@ HETZNER_S3_SECRET_KEY=
 Пуш изменений `dashboard/` запускает сборку с тестовыми значениями окружения в GitHub Actions, затем выкладывает существующий проект Vercel через CLI. Секрет репозитория GitHub `VERCEL_TOKEN` нужен только заданию деплоя в `main`; исходный код и переменные production остаются в Vercel. Прямая Git Integration недоступна, пока к аккаунту Vercel не подключён GitHub login.
 
 `ALLOWED_EMAILS` — адреса через запятую. Пустой список закрывает доступ всем. Ключ `SUPABASE_SERVICE_ROLE_KEY` используется только на сервере. Google OAuth должен быть настроен в Supabase Auth с callback `https://<supabase-project>.supabase.co/auth/v1/callback`; в Supabase URL Configuration разрешите `https://<site>/auth/callback`.
+
+`PRIVATE_CHAT_OWNER_EMAIL` — Google-адрес владельца из `ALLOWED_EMAILS`, `PRIVATE_CHAT_OWNER_USER_ID` — его числовой Telegram ID. Личный диалог показывается только если совпадают адрес вошедшего пользователя, `opened_by` и `telegram_chat_id`. Если любое значение не задано, личные диалоги закрыты для всех. Та же проверка действует для маршрута скачивания вложений. Значения задаются в окружении Vercel для production; после изменения нужен новый деплой.
 
 ```sh
 npm ci
