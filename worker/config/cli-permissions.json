@@ -6,6 +6,8 @@
       "Shell(ls)",
       "Shell(git)",
       "Mcp(github:*)",
+      "Mcp(vlandivir:*)",
+      "Mcp(vlandivir-gtd:*)",
       "WebFetch(*)",
       "Read(**)",
       "Write(**)"

@@ -206,7 +206,7 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
 
 export async function runListing(message, sessionKey, topic, url, queuedJob, {
   get = dbGet, insert = dbInsert, patch = dbPatch, repo = ensureRepo,
-  open = openConversation, agent = runAgent,
+  open = openConversation, agent = runAgent, ownerMcp = null,
 } = {}) {
   const scan = topic.scan;
   const conversation = await open(message, sessionKey);
@@ -256,7 +256,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
   });
   const job = inserted[0];
   try {
-    const { text, chatId, model } = await agent(sessionKey, prompt, conversation.cursor_chat_id, dir);
+    const { text, chatId, model } = await agent(sessionKey, prompt, conversation.cursor_chat_id, dir, { ownerMcp });
     if (chatId && chatId !== conversation.cursor_chat_id) {
       await patch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }

@@ -9,7 +9,7 @@ import { startHeartbeat } from "./health.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
 import { archiveAttachments, materializeObject, safeFileName } from "./storage.js";
-import { isOwnerPrivateMessage, ownerMcpContextForJob } from "./owner-mcp.js";
+import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, prepareOwnerMcpWorkspace } from "./owner-mcp.js";
 import { poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
 import { splitVoiceAnswer, storedVoicePaths, transcribeVoice, voiceInstruction } from "./voice.js";
 
@@ -84,7 +84,7 @@ async function workspaceFor(key) {
 
 async function processTelegramJob(job) {
   const { message, topic, sessionKey: key, url } = job.payload;
-  const ownerMcp = ownerMcpContextForJob(job);
+  const ownerMcp = configuredOwnerMcpContextForJob(job);
   const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
   const retryRule = job.attempts > 1
     ? "Предыдущий запуск этой задачи прервался. Продолжи в том же контексте: сначала проверь уже сделанные изменения и не повторяй завершённые действия."
@@ -107,6 +107,7 @@ async function processTelegramJob(job) {
       throw new Error(`Не удалось сохранить вложение в Hetzner Storage: ${error.message}`);
     }
     const cwd = topic.repo ? await ensureRepo(topic.repo, key) : await workspaceFor(key);
+    await prepareOwnerMcpWorkspace(cwd, ownerMcp);
     message.filePaths = await saveFiles(artifacts, job.id, cwd);
     message.unavailableFiles = artifacts.filter((item) => item.status === "unavailable").map((item) => item.name);
     const voiceFiles = storedVoicePaths(artifacts, message.filePaths);
@@ -134,7 +135,7 @@ async function processTelegramJob(job) {
       message.filePaths = message.filePaths.filter((path) => !voiceFiles.includes(path));
     }
     const answer = taskTopic.project && url && !message.voiceTranscript
-      ? await runListing(message, key, taskTopic, url, job)
+      ? await runListing(message, key, taskTopic, url, job, { ownerMcp })
       : await runQueued(message, key, promptFor(message, taskTopic), cwd, taskTopic, job, { ownerMcp });
     if (message.voiceTranscript) {
       const spoken = splitVoiceAnswer(answer);

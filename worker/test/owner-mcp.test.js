@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { run } from "../src/agent/run.js";
-import { isOwnerPrivateMessage, ownerMcpContextForJob } from "../src/owner-mcp.js";
+import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, ownerMcpContextForJob, prepareOwnerMcpWorkspace } from "../src/owner-mcp.js";
 
 const ownerId = "12345";
 const ownerPrivate = { userId: ownerId, chatId: 12345, chatType: "private", inGroup: false };
@@ -75,4 +78,37 @@ test("only the verified owner context receives MCP credentials and chat id", asy
   assert.equal(env.VLANDIVIR_MCP_API_KEY, "main-test");
   assert.equal(env.VLANDIVIR_GTD_MCP_TOKEN, "gtd-test");
   assert.equal(env.VLANDIVIR_MCP_CHAT_ID, ownerId);
+});
+
+test("owner workspace gets both MCP profiles without storing tokens", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ai-family-owner-mcp-"));
+  const ownerDir = join(root, "owner");
+  const groupDir = join(root, "group");
+  try {
+    await mkdir(ownerDir);
+    await mkdir(groupDir);
+    const job = { payload: { message: ownerPrivate, ownerMcpEligible: true } };
+    const env = {
+      VLANDIVIR_MCP_OWNER_USER_ID: ownerId,
+      VLANDIVIR_MCP_API_KEY: "main-test",
+      VLANDIVIR_GTD_MCP_TOKEN: "gtd-test",
+    };
+    const context = configuredOwnerMcpContextForJob(job, env);
+    assert.deepEqual(context, { chatId: ownerId });
+    await prepareOwnerMcpWorkspace(ownerDir, context);
+    await prepareOwnerMcpWorkspace(groupDir, null);
+    const file = join(ownerDir, ".cursor", "mcp.json");
+    const raw = await readFile(file, "utf8");
+    const config = JSON.parse(raw);
+    assert.deepEqual(Object.keys(config.mcpServers), ["vlandivir", "vlandivir-gtd"]);
+    assert.equal(config.mcpServers.vlandivir.headers["X-Chat-Id"], "$" + "{env:VLANDIVIR_MCP_CHAT_ID}");
+    assert.equal(config.mcpServers["vlandivir-gtd"].headers.Authorization, "Bearer $" + "{env:VLANDIVIR_GTD_MCP_TOKEN}");
+    assert.equal(raw.includes("main-test"), false);
+    assert.equal(raw.includes("gtd-test"), false);
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    await assert.rejects(stat(join(groupDir, ".cursor", "mcp.json")), { code: "ENOENT" });
+    assert.equal(configuredOwnerMcpContextForJob(job, { ...env, VLANDIVIR_GTD_MCP_TOKEN: "" }), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
