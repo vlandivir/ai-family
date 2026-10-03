@@ -15,13 +15,27 @@ if (!Number.isFinite(agentTimeoutMs) || agentTimeoutMs < 1000) {
 
 const active = new Set();
 
+const ownerMcpEnvNames = ["VLANDIVIR_MCP_API_KEY", "VLANDIVIR_GTD_MCP_TOKEN", "VLANDIVIR_MCP_CHAT_ID"];
+
+function agentEnvironment(baseEnv, ownerMcp) {
+  const env = { ...baseEnv };
+  for (const name of ownerMcpEnvNames) delete env[name];
+  if (ownerMcp && /^\d+$/.test(String(ownerMcp.chatId))) {
+    for (const name of ownerMcpEnvNames.slice(0, 2)) {
+      if (baseEnv[name]) env[name] = baseEnv[name];
+    }
+    env.VLANDIVIR_MCP_CHAT_ID = String(ownerMcp.chatId);
+  }
+  return env;
+}
+
 export function agentBusy(key) {
   return key == null ? active.size > 0 : active.has(key);
 }
 
-export function run(args, cwd = workspace, { spawnChild = spawn, timeoutMs = agentTimeoutMs } = {}) {
+export function run(args, cwd = workspace, { spawnChild = spawn, timeoutMs = agentTimeoutMs, ownerMcp = null, baseEnv = process.env } = {}) {
   const env = {
-    ...process.env,
+    ...agentEnvironment(baseEnv, ownerMcp),
     GIT_ASKPASS: askpass,
     GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Family bot",
@@ -103,14 +117,14 @@ function parseAgentOutput(raw) {
   return { text: text.trim(), model };
 }
 
-async function createChat(userId, cwd) {
-  const id = (await run(["create-chat"], cwd)).split("\n").filter(Boolean).at(-1);
+async function createChat(userId, cwd, ownerMcp) {
+  const id = (await run(["create-chat"], cwd, { ownerMcp })).split("\n").filter(Boolean).at(-1);
   if (!id) throw new Error("agent create-chat returned no id");
   await setChatId(userId, id);
   return id;
 }
 
-export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
+export async function runAgent(userId, prompt, cursorChatId, cwd = workspace, { ownerMcp = null } = {}) {
   if (active.has(userId)) {
     return Promise.reject(new Error("busy"));
   }
@@ -118,12 +132,13 @@ export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
   await chmod(askpass, 0o700).catch(() => {});
   try {
     let chatId = cursorChatId || (await getChatId(userId));
-    if (!chatId) chatId = await createChat(userId, cwd);
+    if (!chatId) chatId = await createChat(userId, cwd, ownerMcp);
     const ask = async (id) => {
       try {
         return parseAgentOutput(await run(
           ["-p", "--trust", "--approve-mcps", "--output-format", "stream-json", "--resume", id, prompt],
           cwd,
+          { ownerMcp },
         ));
       } catch (error) {
         const parsed = parseAgentOutput(error.stdout);
@@ -138,7 +153,7 @@ export async function runAgent(userId, prompt, cursorChatId, cwd = workspace) {
         throw error;
       }
       await clearChatId(userId);
-      chatId = await createChat(userId, cwd);
+      chatId = await createChat(userId, cwd, ownerMcp);
       try {
         return { ...(await ask(chatId)), chatId };
       } catch (retryError) {

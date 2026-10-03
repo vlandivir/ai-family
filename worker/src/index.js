@@ -9,6 +9,7 @@ import { startHeartbeat } from "./health.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
 import { archiveAttachments, materializeObject, safeFileName } from "./storage.js";
+import { isOwnerPrivateMessage, ownerMcpContextForJob } from "./owner-mcp.js";
 import { poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
 
 const topicsPath = join(dirname(fileURLToPath(import.meta.url)), "../config/topics.json");
@@ -81,6 +82,7 @@ async function workspaceFor(key) {
 
 async function processTelegramJob(job) {
   const { message, topic, sessionKey: key, url } = job.payload;
+  const ownerMcp = ownerMcpContextForJob(job);
   const reply = (text) => sendMessage(message.chatId, text, message.threadId, message.messageId);
   const retryRule = job.attempts > 1
     ? "Предыдущий запуск этой задачи прервался. Продолжи в том же контексте: сначала проверь уже сделанные изменения и не повторяй завершённые действия."
@@ -107,7 +109,7 @@ async function processTelegramJob(job) {
     message.unavailableFiles = artifacts.filter((item) => item.status === "unavailable").map((item) => item.name);
     const answer = taskTopic.project && url
       ? await runListing(message, key, taskTopic, url, job)
-      : await runQueued(message, key, promptFor(message, taskTopic), cwd, taskTopic, job);
+      : await runQueued(message, key, promptFor(message, taskTopic), cwd, taskTopic, job, { ownerMcp });
     await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
   } catch (error) {
     console.error("job failed", error.message);
@@ -174,7 +176,7 @@ await poll(async (message) => {
       source: "telegram",
       external_user_id: message.userId,
       kind: topic.project && listingUrl(message.text) ? "analyze_listing" : "chat",
-      payload: { message, topic, sessionKey: key, url: listingUrl(message.text) },
+      payload: { message, topic, sessionKey: key, url: listingUrl(message.text), ownerMcpEligible: isOwnerPrivateMessage(message) },
       status: "queued",
     });
   } catch (error) {

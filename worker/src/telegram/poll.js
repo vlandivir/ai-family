@@ -288,6 +288,7 @@ export async function poll(onText, { signal } = {}) {
           chatId: message.chat.id,
           userId,
           text,
+          chatType,
           files,
           location: location ? {
             latitude: location.latitude,

@@ -151,7 +151,7 @@ export async function openConversation(message, sessionKey) {
   return created[0];
 }
 
-export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, queuedJob) {
+export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, queuedJob, { ownerMcp = null } = {}) {
   const conversation = await openConversation(message, sessionKey);
   const inserted = queuedJob ? [queuedJob] : await dbInsert("agent_jobs", {
     conversation_id: conversation.id,
@@ -165,7 +165,7 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
   });
   const job = inserted[0];
   try {
-    const { text, chatId, model } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, cwd);
+    const { text, chatId, model } = await runAgent(sessionKey, prompt, conversation.cursor_chat_id, cwd, { ownerMcp });
     if (chatId && chatId !== conversation.cursor_chat_id) {
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
