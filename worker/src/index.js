@@ -9,7 +9,7 @@ import { startHeartbeat } from "./health.js";
 import { ensureRepo, listingUrl, openConversation, runListing, runQueued } from "./queue.js";
 import { startScan } from "./scan.js";
 import { archiveAttachments, materializeObject, safeFileName } from "./storage.js";
-import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, ownerThreadsReplyRule, prepareOwnerMcpWorkspace } from "./owner-mcp.js";
+import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, ownerThreadsReplyRule, prepareOwnerMcpWorkspace, splitThreadsAnswer } from "./owner-mcp.js";
 import { poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
 import { splitVoiceAnswer, storedVoicePaths, transcribeVoice, voiceInstruction } from "./voice.js";
 
@@ -82,6 +82,16 @@ async function workspaceFor(key) {
   return dir;
 }
 
+async function replyThreadsAnswer(message, answer) {
+  const { copy, notes } = splitThreadsAnswer(answer);
+  if (copy) {
+    await sendMessage(message.chatId, copy, message.threadId, message.messageId);
+    if (notes) await sendAnswer(message.chatId, notes, message.threadId, message.messageId);
+    return;
+  }
+  await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
+}
+
 async function processTelegramJob(job) {
   const { message, topic, sessionKey: key, url } = job.payload;
   const ownerMcp = configuredOwnerMcpContextForJob(job);
@@ -149,7 +159,12 @@ async function processTelegramJob(job) {
         message.messageId,
       );
       const replyText = spoken.transcript ? spoken.answer : answer;
-      if (replyText) await sendAnswer(message.chatId, replyText, message.threadId, transcriptId || message.messageId);
+      if (replyText) {
+        if (ownerMcp) await replyThreadsAnswer({ ...message, messageId: transcriptId || message.messageId }, replyText);
+        else await sendAnswer(message.chatId, replyText, message.threadId, transcriptId || message.messageId);
+      }
+    } else if (ownerMcp) {
+      await replyThreadsAnswer(message, answer);
     } else {
       await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
     }

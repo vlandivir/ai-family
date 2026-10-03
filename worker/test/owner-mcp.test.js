@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { run } from "../src/agent/run.js";
-import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, ownerMcpContextForJob, prepareOwnerMcpWorkspace } from "../src/owner-mcp.js";
+import { configuredOwnerMcpContextForJob, isOwnerPrivateMessage, ownerMcpContextForJob, ownerThreadsReplyRule, prepareOwnerMcpWorkspace, splitThreadsAnswer } from "../src/owner-mcp.js";
 
 const ownerId = "12345";
 const ownerPrivate = { userId: ownerId, chatId: 12345, chatType: "private", inGroup: false };
@@ -111,4 +111,14 @@ test("owner workspace gets both MCP profiles without storing tokens", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Threads reply rule asks for a copy block and splitThreadsAnswer peels it off", () => {
+  assert.match(ownerThreadsReplyRule, /<<<THREADS_COPY>>>/);
+  assert.match(ownerThreadsReplyRule, /отдельным сообщением/);
+  const post = "Первый абзац.\n\nВторой абзац.";
+  const split = splitThreadsAnswer(`<<<THREADS_COPY>>>\n${post}\n<<<END>>>\n\nПоправил запятую.`);
+  assert.equal(split.copy, post);
+  assert.equal(split.notes, "Поправил запятую.");
+  assert.deepEqual(splitThreadsAnswer("просто ответ"), { copy: null, notes: "просто ответ" });
 });
