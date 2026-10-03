@@ -11,6 +11,7 @@ import { startScan } from "./scan.js";
 import { archiveAttachments, materializeObject, safeFileName } from "./storage.js";
 import { isOwnerPrivateMessage, ownerMcpContextForJob } from "./owner-mcp.js";
 import { poll, sendAnswer, sendMessage, setMessageReaction } from "./telegram/poll.js";
+import { splitVoiceAnswer, storedVoicePaths, transcribeVoice, voiceInstruction } from "./voice.js";
 
 const topicsPath = join(dirname(fileURLToPath(import.meta.url)), "../config/topics.json");
 const topics = JSON.parse(await readFile(topicsPath, "utf8"));
@@ -58,7 +59,8 @@ function mediaNote(message) {
 function promptFor(message, topic) {
   const body = message.inGroup ? `${message.senderName}: ${message.text}` : message.text;
   const prompt = topic.rule ? `${topic.rule}\n\n${body}` : body;
-  return `${prompt}${mediaNote(message)}`;
+  const voice = message.voiceTranscript ? `\n\n${voiceInstruction(message.voiceTranscript)}` : "";
+  return `${prompt}${voice}${mediaNote(message)}`;
 }
 
 async function saveFiles(artifacts, jobId, cwd) {
@@ -107,13 +109,49 @@ async function processTelegramJob(job) {
     const cwd = topic.repo ? await ensureRepo(topic.repo, key) : await workspaceFor(key);
     message.filePaths = await saveFiles(artifacts, job.id, cwd);
     message.unavailableFiles = artifacts.filter((item) => item.status === "unavailable").map((item) => item.name);
-    const answer = taskTopic.project && url
+    const voiceFiles = storedVoicePaths(artifacts, message.filePaths);
+    if (voiceFiles.length) {
+      try {
+        const parts = [];
+        for (const filePath of voiceFiles) {
+          const text = await transcribeVoice(filePath);
+          if (text) parts.push(text);
+        }
+        message.voiceTranscript = parts.join("\n");
+      } catch (error) {
+        console.error("voice", error.message);
+        await reply("Не удалось распознать голосовое. Подробность осталась в логе сервера.");
+        const wrapped = new Error(error.message);
+        wrapped.code = "REPLIED";
+        throw wrapped;
+      }
+      if (!message.voiceTranscript) {
+        await reply("Не удалось разобрать голосовое.");
+        const wrapped = new Error("empty voice transcript");
+        wrapped.code = "REPLIED";
+        throw wrapped;
+      }
+      message.filePaths = message.filePaths.filter((path) => !voiceFiles.includes(path));
+    }
+    const answer = taskTopic.project && url && !message.voiceTranscript
       ? await runListing(message, key, taskTopic, url, job)
       : await runQueued(message, key, promptFor(message, taskTopic), cwd, taskTopic, job, { ownerMcp });
-    await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
+    if (message.voiceTranscript) {
+      const spoken = splitVoiceAnswer(answer);
+      const transcriptId = await sendMessage(
+        message.chatId,
+        spoken.transcript || message.voiceTranscript,
+        message.threadId,
+        message.messageId,
+      );
+      const replyText = spoken.transcript ? spoken.answer : answer;
+      if (replyText) await sendAnswer(message.chatId, replyText, message.threadId, transcriptId || message.messageId);
+    } else {
+      await sendAnswer(message.chatId, answer, message.threadId, message.messageId);
+    }
   } catch (error) {
     console.error("job failed", error.message);
-    if (!retryableJobError(job, error)) {
+    if (error.code !== "REPLIED" && !retryableJobError(job, error)) {
       await reply(error.code === "AGENT_TIMEOUT"
         ? "Не удалось завершить обработку за несколько попыток. Задача остановлена, чтобы не держать ветку занятой."
         : "Не вышло разобрать сообщение. Подробность осталась в логе сервера.");

@@ -10,6 +10,7 @@ import { retryableJobError } from "./agent/jobs.js";
 import { runAgent } from "./agent/run.js";
 import { cardText } from "./catalog-lookup.js";
 import { assessmentStatuses, interestingListing } from "./listing-policy.js";
+import { splitVoiceAnswer } from "./voice.js";
 
 const git = promisify(execFile);
 const repoRoot = process.env.PROJECT_REPOS_DIR || "/var/lib/ai-family/repos";
@@ -170,6 +171,7 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
       await dbPatch(`conversations?id=eq.${conversation.id}`, { cursor_chat_id: chatId });
     }
     const { prose, cards } = cardsFromAnswer(text);
+    const spoken = splitVoiceAnswer(prose);
     const savedCards = [];
     const listingCards = cards.filter(shouldUpsertListing);
     if (listingCards.length && topic.project) {
@@ -182,11 +184,12 @@ export async function runQueued(message, sessionKey, prompt, cwd, topic = {}, qu
         }
       }
     }
+    const visible = spoken.transcript ? [spoken.transcript, spoken.answer].filter(Boolean).join("\n\n") : prose;
     await dbPatch(`agent_jobs?id=eq.${job.id}`, {
       status: "succeeded",
       finished_at: new Date().toISOString(),
       model,
-      result: { text: prose },
+      result: { text: visible },
     });
     return [...savedCards, prose].filter(Boolean).join("\n\n");
   } catch (error) {

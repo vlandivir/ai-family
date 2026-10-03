@@ -27,6 +27,16 @@ test("every response chunk replies to the incoming message", async () => {
   assert.ok(bodies.every((body) => body.message_thread_id === 28));
 });
 
+test("sendMessage returns the id of the first chunk", async () => {
+  process.env.TELEGRAM_BOT_TOKEN = "test-token";
+  let nextId = 70;
+  globalThis.fetch = async () => ({ json: async () => ({ ok: true, result: { message_id: nextId++ } }) });
+
+  const id = await sendMessage(-100, "a".repeat(4500), 28, 42);
+
+  assert.equal(id, 70);
+});
+
 test("queued reaction is replaced by the working reaction on the same message", async () => {
   process.env.TELEGRAM_BOT_TOKEN = "test-token";
   const calls = [];

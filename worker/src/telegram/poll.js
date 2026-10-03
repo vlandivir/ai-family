@@ -177,7 +177,7 @@ export async function sendAnswer(chatId, text, threadId, replyToMessageId) {
   if (!sent) await sendMessage(chatId, text, threadId, replyToMessageId);
 }
 
-export function sendMessage(chatId, text, threadId, replyToMessageId) {
+export async function sendMessage(chatId, text, threadId, replyToMessageId) {
   const chunks = [];
   let rest = text || "пусто";
   while (rest.length > 0) {
@@ -188,10 +188,11 @@ export function sendMessage(chatId, text, threadId, replyToMessageId) {
   const reply = replyToMessageId == null ? {} : {
     reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
   };
-  return chunks.reduce(async (chain, chunk) => {
-    await chain;
+  let messageId = null;
+  for (const chunk of chunks) {
+    let sent;
     try {
-      await call("sendMessage", {
+      sent = await call("sendMessage", {
         chat_id: chatId,
         text: toTelegramHtml(chunk),
         parse_mode: "HTML",
@@ -200,12 +201,14 @@ export function sendMessage(chatId, text, threadId, replyToMessageId) {
       });
     } catch {
       try {
-        await call("sendMessage", { chat_id: chatId, text: chunk, ...thread, ...reply });
+        sent = await call("sendMessage", { chat_id: chatId, text: chunk, ...thread, ...reply });
       } catch {
-        await call("sendMessage", { chat_id: chatId, text: chunk, ...thread });
+        sent = await call("sendMessage", { chat_id: chatId, text: chunk, ...thread });
       }
     }
-  }, Promise.resolve());
+    messageId ??= sent?.message_id ?? null;
+  }
+  return messageId;
 }
 
 function namedFile(file, fallback, kind, mimeType) {
@@ -227,7 +230,7 @@ export function attachments(message) {
   if (message.video) files.push(namedFile(message.video, "video.mp4", "video", "video/mp4"));
   if (message.video_note) files.push(namedFile(message.video_note, "video-note.mp4", "video", "video/mp4"));
   if (message.audio) files.push(namedFile(message.audio, "audio", "audio", "audio/mpeg"));
-  if (message.voice) files.push(namedFile(message.voice, "voice.ogg", "audio", "audio/ogg"));
+  if (message.voice) files.push(namedFile(message.voice, "voice.ogg", "voice", "audio/ogg"));
   if (message.animation) files.push(namedFile(message.animation, "animation.mp4", "video", "video/mp4"));
   return files;
 }
