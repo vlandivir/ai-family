@@ -63,3 +63,18 @@ test("removal is sent once and only for previously suitable objects", async () =
     assert.equal(changes.length, expected);
   }
 });
+
+test("house price changes and removals update the database quietly", async () => {
+  for (const status of [200, 404]) {
+    const updates = [];
+    const changes = await recheck([{ id: "house", status: "fit", asking_price_eur: 180000,
+      source_url: "https://example.com/house", details: { category: "houses" } }], 24, "project", {
+      fetch: async () => ({ status, html: '<script type="application/ld+json">{"@type":"Offer","price":175000}</script>' }),
+      patch: async (path, row) => updates.push(row), record: async () => {},
+    });
+    assert.equal(changes.length, 0);
+    assert.equal(updates.length, 1);
+    if (status === 200) assert.equal(updates[0].asking_price_eur, 175000);
+    else assert.equal(updates[0].details.availabilityStatus, "removed");
+  }
+});

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { catalogTasks, checkNext, checkTask, readListings, recordScan, recoverScanJobs } from "../src/scan.js";
-import { claimTask, createScanStore, dayMs, enqueueTasks, finishTask, normalizeScanState } from "../src/scan-state.js";
+import { claimTask, createScanStore, dayMs, enqueueTasks, finishTask, normalizeScanState, dailyAnalysisLimit } from "../src/scan-state.js";
 
 const now = Date.parse("2026-09-29T10:00:00Z");
 const task = (name, kind = "new") => ({ kind, url: `https://example.com/${name}` });
@@ -50,11 +50,11 @@ test("canonical URL aliases are deduplicated and a failed check waits exactly 24
   assert.equal(claimTask(state, now + dayMs).url, claimed.url);
 });
 
-test("100-new quota does not stop old checks and resets on the next Belgrade day", () => {
+test("raised new quota does not stop old checks and resets on the next Belgrade day", () => {
   const state = normalizeScanState({}, now);
-  enqueueTasks(state, Array.from({ length: 101 }, (_, i) => task(i)));
+  enqueueTasks(state, Array.from({ length: dailyAnalysisLimit + 1 }, (_, i) => task(i)));
   enqueueTasks(state, [task("old", "existing")]);
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < dailyAnalysisLimit; i++) {
     const claimed = claimTask(state, now);
     assert.equal(claimed.kind, "new");
     finishTask(state, claimed);
@@ -163,4 +163,38 @@ test("initial rejection logs its reason and never enters the notification queue"
   assert.deepEqual(saved().notifications, []);
   assert.equal(events.at(-1).result, "excluded");
   assert.equal(events.at(-1).details.reason, "Первый этаж");
+});
+
+test("ready tasks follow category priority in a restored mixed queue", () => {
+  const state = normalizeScanState({ queue: [
+    { ...task("house"), scenario: "houses" }, { ...task("build"), scenario: "newbuild" },
+    { ...task("living"), scenario: "living" }, { ...task("rental"), scenario: "rental" },
+  ] }, now);
+  for (const scenario of ["rental", "living", "newbuild", "houses"]) {
+    const claimed = claimTask(state, now);
+    assert.equal(claimed.scenario, scenario);
+    finishTask(state, claimed);
+  }
+});
+
+test("blocked sources and inspected information pages stay out after restart", () => {
+  const inspected = "https://4zida.rs/novogradnja/investitor/123";
+  const state = normalizeScanState({ inspectedPages: { [inspected]: new Date(now).toISOString() }, queue: [
+    { kind: "new", url: inspected }, { kind: "existing", url: "https://www.halooglasi.com/nekretnine/123" },
+    { kind: "new", url: "https://nekretnine.rs/oglasi/123" }, task("allowed"),
+  ] }, now + dayMs * 5);
+  assert.deepEqual(state.queue.map(x => x.url), [task("allowed").url]);
+  enqueueTasks(state, [{ kind: "new", url: inspected }]);
+  assert.equal(state.queue.length, 1);
+});
+
+test("information pages are inspected once even if their first response fails", async () => {
+  const url = "https://4zida.rs/novogradnja/investitor/123";
+  const { store, saved } = memoryStore({ queue: [{ kind: "new", url }] });
+  await checkNext({}, "project", store, { now: () => now, record: async () => {},
+    process: async () => { throw new Error("no JSON"); },
+  });
+  const restarted = normalizeScanState(saved(), now + dayMs * 2);
+  enqueueTasks(restarted, [{ kind: "new", url }]);
+  assert.equal(restarted.queue.length, 0);
 });

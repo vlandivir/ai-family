@@ -124,7 +124,7 @@ test("shutdown waits for both active lanes and starts no next listing", { timeou
   assert.equal((await store.read()).queue.length, 1);
 });
 
-test("full search sweep attempts each config including blocked sites, follows filtered pagination and deduplicates loops", async () => {
+test("full search sweep skips blocked sites, follows filtered pagination and deduplicates loops", async () => {
   const { store } = memoryStore();
   const first = "https://4zida.rs/prodaja-stanova/beograd?budget=200000";
   const second = `${first}&page=2`;
@@ -139,8 +139,8 @@ test("full search sweep attempts each config including blocked sites, follows fi
       return { status: 200, html: `<a href="http://[">malformed</a><a href="${url}">listing</a><a href="${second}">next</a><a href="${first}">back</a><a href="?budget=999999&page=3">wrong budget</a><a href="https://other.com/?budget=200000&page=3">other site</a>` };
     },
   });
-  assert.deepEqual(fetched, [first, blocked, second]);
-  assert.deepEqual(events.filter(event => event.source_url === blocked).map(event => event.result), ["started", "http_error"]);
+  assert.deepEqual(fetched, [first, second]);
+  assert.deepEqual(events.filter(event => event.source_url === blocked).map(event => event.result), []);
   const state = await store.read();
   assert.equal(state.queue.length, 1);
   assert.equal(state.queue[0].scenario, "living");

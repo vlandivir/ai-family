@@ -2,7 +2,23 @@ import { readJson, writeJson } from "./health.js";
 
 export const dayMs = 24 * 60 * 60 * 1000;
 export const searchEveryMs = dayMs / 2;
-export const dailyAnalysisLimit = 100;
+export const dailyAnalysisLimit = 500;
+
+export const scenarioOrder = ["rental", "living", "newbuild", "houses"];
+export function blockedScanUrl(value) {
+  try { return /^(?:www\.)?(?:nekretnine\.rs|halooglasi\.com)$/.test(new URL(value).hostname); } catch { return false; }
+}
+export function informationPage(value) {
+  try {
+    const url = new URL(value);
+    if (/(?:^|\/)(?:investitor|investitori|developer|developers|zastupnik|agencija)(?:\/|$)/i.test(url.pathname)) return true;
+    return /(?:^|\.)4zida\.rs$/.test(url.hostname) && /\/novogradnja\/.+\/\d+$/.test(url.pathname) && !/\/\d+\/\d+$/.test(url.pathname);
+  } catch { return false; }
+}
+export function scenarioPriority(task) {
+  const scenario = task.scenario || (/prodaja-kuca/.test(task.url) ? "houses" : /novogradnja/.test(task.url) ? "newbuild" : "living");
+  return scenarioOrder.indexOf(scenario) < 0 ? 4 : scenarioOrder.indexOf(scenario);
+}
 
 export function canonicalUrl(value) {
   try {
@@ -41,9 +57,10 @@ export function normalizeScanState(value = {}, now = Date.now()) {
   const state = {
     version: 2, queue: [], checkedUrls: {}, analyzedOn: value.analyzedOn || null,
     analyzed: value.analyzed || 0, lastDiscovery: value.lastDiscovery || null,
-    searchRun: value.searchRun || null, activeTask: null,
+    searchRun: value.searchRun ? { ...value.searchRun, remaining: value.searchRun.remaining.filter(entry => !blockedScanUrl(entry.url)).sort((a, b) => scenarioPriority(a) - scenarioPriority(b)) } : null, activeTask: null,
     notifications: value.notifications || [],
     lastRequestAt: value.lastRequestAt || null,
+    inspectedPages: { ...(value.inspectedPages || {}) },
   };
   state.checkedUrls = { ...(value.checkedUrls || {}) };
   if (value.version !== 2) {
@@ -55,7 +72,7 @@ export function normalizeScanState(value = {}, now = Date.now()) {
   const seen = new Set();
   for (const item of tasks) {
     const task = legacyTask(item);
-    if (task && !seen.has(task.url)) {
+    if (task && !blockedScanUrl(task.url) && !state.inspectedPages[task.url] && !seen.has(task.url)) {
       seen.add(task.url);
       state.queue.push(task);
     }
@@ -87,7 +104,7 @@ export function enqueueTasks(state, tasks) {
   const queued = new Set([...state.queue, ...(state.activeTask ? [state.activeTask] : [])].flatMap(taskUrls));
   for (const task of tasks) {
     const urls = taskUrls(task);
-    if (!urls.length || urls.some(url => queued.has(url))) continue;
+    if (!urls.length || blockedScanUrl(urls[0]) || urls.some(url => queued.has(url) || state.inspectedPages?.[url])) continue;
     state.queue.push({ ...task, url: urls[0] });
     urls.forEach(url => queued.add(url));
   }
@@ -104,8 +121,13 @@ export function claimTask(state, now = Date.now()) {
   if (state.activeTask) return null;
   const date = scanDate(now);
   if (state.analyzedOn !== date) { state.analyzedOn = date; state.analyzed = 0; }
-  const index = state.queue.findIndex(task => taskDueAt(state, task) <= now &&
-    (task.kind !== "new" || state.analyzed < dailyAnalysisLimit));
+  let index = -1;
+  for (let i = 0; i < state.queue.length; i++) {
+    const task = state.queue[i];
+    if (blockedScanUrl(task.url) || state.inspectedPages?.[task.url] || taskDueAt(state, task) > now ||
+      (task.kind === "new" && state.analyzed >= dailyAnalysisLimit)) continue;
+    if (index < 0 || scenarioPriority(task) < scenarioPriority(state.queue[index])) index = i;
+  }
   if (index < 0) return null;
   const [task] = state.queue.splice(index, 1);
   task.checkedAt = new Date(now).toISOString();

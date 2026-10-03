@@ -140,3 +140,21 @@ test("unchanged suitable object is updated quietly", async () => {
   assert.equal(outcome.scanResult, "unchanged");
   assert.equal(outcome.notification, null);
 });
+
+for (const status of ["fit", "conditional", "reference", "excluded"]) {
+  test(`houses are saved quietly for price research with status ${status}`, async () => {
+    const mock = setup({ is_listing: true, status, category: "houses", address: "Karaburma", asking_price_eur: 180000 });
+    const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+    assert.equal(outcome.notification, null);
+    assert.equal(mock.inserted.filter(item => item.table === "listings").length, 1);
+    assert.equal(mock.inserted.find(item => item.table === "listings").row.details.category, "houses");
+  });
+}
+
+test("known house price changes are persisted without notifications", async () => {
+  const mock = setup({ is_listing: true, status: "fit", category: "houses", asking_price_eur: 170000 },
+    [{ id: "existing", source_url: url }], { status: "fit", asking_price_eur: 180000, details: { category: "houses" } });
+  const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+  assert.equal(outcome.notification, null);
+  assert.equal(mock.patched.find(x => x.path === "listings?id=eq.existing").row.asking_price_eur, 170000);
+});

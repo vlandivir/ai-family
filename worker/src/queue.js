@@ -215,15 +215,16 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
   const prompt = [
     topic.rule,
     `Ссылка: ${url}`,
+    scan ? "Фоновый обход: до 500 новых разборов в сутки. Приоритет: rental, living, newbuild, houses. Nekretnine.rs и Halo Oglasi автоматически не обходятся, только ручные ссылки. Эти указания покупателя важнее прежних правил файла." : "",
     scan?.scenario ? `Сценарий поиска: ${scan.scenario}. Оцени объект по этому сценарию.` : "",
     scan?.maxPriceEur ? `Бюджет поиска: не больше ${scan.maxPriceEur} EUR. Укажи достоверную цену в asking_price_eur.` : "",
     scan ? "Во время фонового разбора делай запросы к сайтам не чаще одного раза в 60 секунд. Объявление открывай один раз, повторные запросы к нему в этом разборе не делай." : "",
-    scan ? "Это первичный автоматический отбор. Обязательно поставь status: fit (подходит), conditional (интересный с оговоркой), excluded (исключён) или reference (только ориентир). При нарушении жёстких критериев выбирай excluded. Новые excluded/reference не сохраняются в каталог и не отправляются в чат. Не называй исключённый объект интересным." : "",
-    scan ? "В чат сообщаем только о новых fit/conditional и о существенных изменениях ранее подходящих объектов. Старые исключённые и ориентиры не возвращай в активную подборку. Неизменившиеся объекты, отказы, превышение бюджета и ошибки оставляй в журнале." : "",
+    scan ? "Это первичный автоматический отбор. Обязательно поставь status: fit (подходит), conditional (интересный с оговоркой), excluded (исключён) или reference (только ориентир). При нарушении жёстких критериев выбирай excluded. Новые excluded/reference квартир не сохраняются в каталог и не отправляются в чат. Дома сохраняются при любом статусе для сравнения цен по районам и динамики, без сообщений в чат. Не называй исключённый объект интересным." : "",
+    scan ? "Дома никогда не отправляй в чат. В чат сообщаем только о новых fit/conditional и о существенных изменениях ранее подходящих объектов. Старые исключённые и ориентиры не возвращай в активную подборку. Неизменившиеся объекты, отказы, превышение бюджета и ошибки оставляй в журнале." : "",
     "Прочитай APARTMENT_SELECTION_INSTRUCTIONS.md в текущей папке и открой ссылку.",
     "Сначала реши, это страница одного объявления о квартире или доме.",
     "Витрина, каталог, поиск, статья и наша собственная страница — не объявление.",
-    "Если это не объявление, ответь по смыслу и закончи блоком {\"is_listing\":false}. Карточку не заполняй.",
+    "Если это страница инвестора или застройщика, изучи информацию при первом открытии; повторять просмотр не нужно. Если это не объявление, ответь по смыслу и закончи блоком {\"is_listing\":false}. Карточку не заполняй.",
     "Если это объявление, ответь коротко, насколько квартира подходит.",
     "Поставь category ровно одним из значений: rental, living, houses, newbuild.",
     "rental — квартира под сдачу. living — квартира для жизни семьи. houses — дом. newbuild — новостройка или проект со сдачей в будущем.",
@@ -352,7 +353,7 @@ async function saveScannedListing(projectId, url, card, prose, scan, { get, inse
   if (banned || overBudget) row.status = "excluded";
   const reason = banned ? `Исключённый район: ${banned}` : overBudget ? `Цена выше лимита ${scan.maxPriceEur} EUR` : card.fit || card.notes || prose;
   if (banned || overBudget) row.fit = reason;
-  if (!match && !interestingListing(row)) {
+  if (!match && row.details?.category !== "houses" && !interestingListing(row)) {
     return { scanResult: overBudget ? "over_budget" : row.status, reason, notification: null };
   }
   if (match) {
@@ -372,12 +373,12 @@ async function saveScannedListing(projectId, url, card, prose, scan, { get, inse
     const priceChanged = previous != null && row.asking_price_eur != null && previous !== row.asking_price_eur;
     const heading = priceChanged ? `Цена изменилась: ${previous.toLocaleString("ru-RU")} € → ${row.asking_price_eur.toLocaleString("ru-RU")} €` : "Объект изменился";
     return { scanResult: changed ? "updated" : "unchanged", reason,
-      notification: wasInteresting && changed ? [heading, cardText(saved), prose].filter(Boolean).join("\n\n") : null };
+      notification: saved.details?.category !== "houses" && current.details?.category !== "houses" && wasInteresting && changed ? [heading, cardText(saved), prose].filter(Boolean).join("\n\n") : null };
   }
   row.source_urls = [url];
   row.details = scannedDetails(row.details, row.asking_price_eur, url, scan.checkedAt);
   const saved = { ...row, ...(await insert("listings", row))[0] };
-  return { scanResult: "processed", notification: [cardText(saved), prose].filter(Boolean).join("\n\n") };
+  return { scanResult: "processed", notification: saved.details?.category === "houses" ? null : [cardText(saved), prose].filter(Boolean).join("\n\n") };
 }
 
 async function knownListings(projectId, get = dbGet) {

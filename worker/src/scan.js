@@ -5,7 +5,7 @@ import { ensureRepo, runListing } from "./queue.js";
 import { interestingListing } from "./listing-policy.js";
 import { sendMessage } from "./telegram/poll.js";
 import { cardText } from "./catalog-lookup.js";
-import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, enqueueTasks, finishTask, searchEveryMs } from "./scan-state.js";
+import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, enqueueTasks, finishTask, searchEveryMs, blockedScanUrl, scenarioPriority, informationPage } from "./scan-state.js";
 import { createScanRequestGate } from "./scan-rate-limit.js";
 export { canonicalUrl, dailyAnalysisLimit } from "./scan-state.js";
 
@@ -146,7 +146,7 @@ function priceUpdate(details, price, url, currentPrice) {
 
 export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch = dbPatch, record = recordScan } = {}) {
   const due = rows
-    .filter((row) => row.source_url && row.status !== "test" && stale(row.details, hours))
+    .filter((row) => !blockedScanUrl(row.source_url) && row.source_url && row.status !== "test" && stale(row.details, hours))
     .sort((a, b) => String(a.details?.availabilityCheckedAt || a.details?.availabilityChecked || "").localeCompare(String(b.details?.availabilityCheckedAt || b.details?.availabilityChecked || "")))
     .slice(0, 1);
   const changes = [];
@@ -176,7 +176,7 @@ export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch
       details.availabilityNote = `Страница ответила ${page.status}.`;
       await patch(`listings?id=eq.${row.id}`, { details });
       await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: "removed", http_status: page.status });
-      if (interestingListing(row) && row.details?.availabilityStatus !== "removed") changes.push(`Снято с публикации\n${cardText(row)}`);
+      if (row.details?.category !== "houses" && interestingListing(row) && row.details?.availabilityStatus !== "removed") changes.push(`Снято с публикации\n${cardText(row)}`);
       continue;
     }
     const price = page.status === 200 ? extractPrice(page.html) : null;
@@ -196,7 +196,7 @@ export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch
     const update = { details: next.details, asking_price_eur: price };
     await patch(`listings?id=eq.${row.id}`, update);
     await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: next.changed ? "price_changed" : "unchanged", http_status: page.status, details: { price, previous: next.previous } });
-    if (interestingListing(row) && next.changed && next.previous != null) {
+    if (row.details?.category !== "houses" && interestingListing(row) && next.changed && next.previous != null) {
       changes.push(`Цена изменилась: ${next.previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €\n${cardText({ ...row, asking_price_eur: price })}`);
     }
   }
@@ -206,8 +206,9 @@ export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch
 export async function readSearches(dir) {
   const config = JSON.parse(await readFile(join(dir, "scan.json"), "utf8"));
   return (config.searches || []).map(entry => typeof entry === "string" ? { url: entry } : entry)
-    .filter(entry => entry?.url)
-    .map(entry => ({ ...entry, maxPriceEur: entry.maxPriceEur || 200000 }));
+    .filter(entry => entry?.url && !blockedScanUrl(entry.url))
+    .map(entry => ({ ...entry, maxPriceEur: entry.maxPriceEur || 200000 }))
+    .sort((a, b) => scenarioPriority(a) - scenarioPriority(b));
 }
 
 export async function readListings(projectId, get = dbGet) {
@@ -220,9 +221,9 @@ export async function readListings(projectId, get = dbGet) {
 }
 
 export function catalogTasks(rows) {
-  return rows.filter(row => row.source_url || row.source_urls?.some(Boolean))
+  return rows.filter(row => !blockedScanUrl(row.source_url) && (row.source_url || row.source_urls?.some(Boolean)))
     .sort((a, b) => checkedTime(a.details) - checkedTime(b.details))
-    .map(row => ({ kind: "existing", listingId: row.id, url: row.source_url || row.source_urls.find(Boolean),
+    .map(row => ({ kind: "existing", scenario: row.details?.category, listingId: row.id, url: row.source_url || row.source_urls.find(Boolean),
       sourceUrls: row.source_urls || [], availableAt: checkedTime(row.details) ? checkedTime(row.details) + dayMs : 0 }));
 }
 
@@ -286,6 +287,10 @@ export async function searchSweep(topic, projectId, store, {
   while (!stopped()) {
     const current = await store.read();
     const entry = current.searchRun?.remaining[0];
+    if (entry && blockedScanUrl(entry.url)) {
+      await store.update(value => { value.searchRun.remaining.shift(); });
+      continue;
+    }
     if (!entry) {
       await store.update(value => { value.searchRun = null; });
       return true;
@@ -307,6 +312,7 @@ export async function searchSweep(topic, projectId, store, {
       run.visited.push(entry.url);
       const seen = new Set([...run.visited, ...run.remaining.map(item => item.url)]);
       for (const url of pages) if (!seen.has(url)) { run.remaining.push({ ...entry, url }); seen.add(url); }
+      run.remaining.sort((a, b) => scenarioPriority(a) - scenarioPriority(b));
       return value.queue.length - before;
     });
     wake();
@@ -344,6 +350,13 @@ export async function sendScanNotifications(store, { get = dbGet, send = sendMes
   const chat = (await get("conversations?kind=eq.topic&telegram_topic_id=eq.28&select=telegram_chat_id,telegram_topic_id&limit=1"))[0];
   if (!chat) return;
   for (const notification of state.notifications) {
+    // Older releases persisted text notifications; suppress queued house cards too.
+    const number = String(notification).match(/Объект №(\d+)/)?.[1];
+    const card = number ? (await get(`listings?catalog_number=eq.${number}&select=details&limit=1`))[0] : null;
+    if (card?.details?.category === "houses") {
+      await store.update(current => { current.notifications.shift(); });
+      continue;
+    }
     await send(chat.telegram_chat_id, notification, chat.telegram_topic_id);
     await store.update(current => { current.notifications.shift(); });
   }
@@ -365,7 +378,10 @@ export async function checkNext(topic, projectId, store, {
       outcome = await process(task, topic, projectId);
       notifications = Array.isArray(outcome) ? outcome : outcome?.notifications || [];
     } catch (caught) { error = caught; }
-    await store.update(state => finishTask(state, task, { retry: Boolean(error), notifications }));
+    await store.update(state => {
+      if (informationPage(task.url) || outcome?.scanResult === "not_listing") state.inspectedPages[task.url] = task.checkedAt;
+      finishTask(state, task, { retry: Boolean(error) && !informationPage(task.url), notifications });
+    });
     if (error) {
       console.error("scan check", error.message);
       await record(projectId, { source_url: task.url, listing_id: task.listingId,
@@ -410,6 +426,18 @@ export function startScan({
         projectId = (await get(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0]?.id;
         if (!projectId) throw new Error("Проект фонового обхода не найден");
         await store.read();
+        // Recover past non-listing verdicts so existing investor pages are never reopened.
+        for (let offset = 0; ; offset += 1000) {
+          const pages = await get(`agent_jobs?source=eq.scan&project_id=eq.${projectId}&select=payload,finished_at,result&limit=1000&offset=${offset}`);
+          await store.update(state => {
+            for (const page of pages) {
+              const url = canonicalUrl(page.payload?.url);
+              if (url && (informationPage(url) || page.result?.scanResult === "not_listing")) state.inspectedPages[url] = page.finished_at || new Date(now()).toISOString();
+            }
+            state.queue = state.queue.filter(task => !state.inspectedPages[task.url]);
+          });
+          if (pages.length < 1000) break;
+        }
         await recoverScanJobs(projectId, { get, patch });
         return;
       } catch (error) {
