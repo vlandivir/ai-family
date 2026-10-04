@@ -10,6 +10,7 @@ import { retryableJobError } from "./agent/jobs.js";
 import { runAgent } from "./agent/run.js";
 import { cardText } from "./catalog-lookup.js";
 import { assessmentStatuses, interestingListing } from "./listing-policy.js";
+import { photoUrlsFromCard } from "./listing-photos.js";
 import { splitVoiceAnswer } from "./voice.js";
 
 const git = promisify(execFile);
@@ -227,6 +228,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
     "Если это страница инвестора или застройщика, изучи информацию при первом открытии; повторять просмотр не нужно. Если это не объявление, ответь по смыслу и закончи блоком {\"is_listing\":false}. Карточку не заполняй.",
     "Если это объявление, ответь коротко, насколько квартира подходит.",
     "Поставь category ровно одним из значений: rental, living, houses, newbuild.",
+    "Если страница содержит фотографии объекта, скопируй до восьми настоящих HTTPS-адресов изображений из страницы в photo_urls. Не придумывай адреса и не добавляй логотипы площадки. Отсутствуют — оставь пустой массив.",
     "rental — квартира под сдачу. living — квартира для жизни семьи. houses — дом. newbuild — новостройка или проект со сдачей в будущем.",
     "Один и тот же объект объединяй, даже если ссылка отличается параметрами.",
     "Сверяй адрес, дом, площадь и площадку, не полную строку URL.",
@@ -241,7 +243,7 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
     message.unavailableFiles?.length ? `Эти вложения Telegram не дал скачать из-за лимита 20 МБ: ${message.unavailableFiles.join(", ")}. Не утверждай, что просмотрел их.` : "",
     "В конце добавь блок ровно в таком виде:",
     "<<<JSON>>>",
-    '{"is_listing":true,"status":"fit","category":"rental","match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":""}',
+    '{"is_listing":true,"status":"fit","category":"rental","match_id":null,"address":"","neighborhood":"","asking_price_eur":null,"area_m2":null,"rooms":null,"floor":null,"year_built":null,"heating":"","fit":"","notes":"","photo_urls":[]}',
     "<<<END>>>",
   ].join("\n");
   const inserted = queuedJob ? [queuedJob] : await insert("agent_jobs", {
@@ -453,7 +455,8 @@ function listingRow(projectId, url, card, prose) {
       ? [`Район ${banned} исключён с 21 сентября 2026. Карточка остаётся в списке.`, card?.notes || prose].filter(Boolean).join("\n")
       : (card?.notes || prose || null),
     fit: banned ? `Исключён: ${banned}` : (card?.fit || null),
-    details: categoryOf(card) ? { category: categoryOf(card) } : {},
+    details: { ...(categoryOf(card) ? { category: categoryOf(card) } : {}),
+      ...(photoUrlsFromCard(card, url).length ? { photoUrls: photoUrlsFromCard(card, url) } : {}) },
   };
 }
 

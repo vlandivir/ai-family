@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { dbGet, dbInsert, dbPatch } from "./db.js";
 import { ensureRepo, runListing } from "./queue.js";
 import { interestingListing } from "./listing-policy.js";
+import { extractListingPhotos } from "./listing-photos.js";
 import { sendMessage } from "./telegram/poll.js";
 import { cardText } from "./catalog-lookup.js";
 import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, enqueueTasks, finishTask, searchEveryMs, blockedScanUrl, scenarioPriority, informationPage } from "./scan-state.js";
@@ -168,6 +169,10 @@ export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch
       continue;
     }
     const details = { ...(row.details || {}) };
+    if (page.status === 200 && !details.photoUrls?.length) {
+      const photos = extractListingPhotos(page.html, row.source_url);
+      if (photos.length) details.photoUrls = photos;
+    }
     if (page.status === 404 || page.status === 410) {
       details.availabilityChecked = today();
       details.availabilityCheckedAt = new Date().toISOString();

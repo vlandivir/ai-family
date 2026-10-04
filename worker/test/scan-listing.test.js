@@ -116,6 +116,14 @@ test("new conditional object sends the saved numbered card", async () => {
   assert.equal(mock.inserted.find(item => item.table === "listings").row.status, "conditional");
 });
 
+test("new listing saves image URLs supplied from the already opened source page", async () => {
+  const mock = setup({ is_listing: true, status: "fit", category: "living", address: "Belgrade", asking_price_eur: 180000,
+    photo_urls: ["https://resizer2.4zida.rs/first.webp#large", "https://resizer2.4zida.rs/second.webp"] });
+  await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
+  assert.deepEqual(mock.inserted.find(item => item.table === "listings").row.details.photoUrls,
+    ["https://resizer2.4zida.rs/first.webp", "https://resizer2.4zida.rs/second.webp"]);
+});
+
 for (const oldStatus of ["fit", "conditional", "excluded", "reference"]) {
   test(`rediscovered price change respects prior status ${oldStatus}`, async () => {
     const mock = setup({ is_listing: true, status: "fit", asking_price_eur: 250000 }, [{ id: "existing", source_url: url }], { catalog_number: 182, status: oldStatus, asking_price_eur: 190000 });

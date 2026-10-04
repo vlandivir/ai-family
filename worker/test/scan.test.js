@@ -30,6 +30,15 @@ test("first automatic price check compares against the catalog and returns the u
   assert.match(changes[0], /https:\/\/example.com\/listing/);
 });
 
+test("daily check stores photo links from the already fetched listing page", async () => {
+  let update;
+  await recheck([{ id: "listing", status: "fit", source_url: "https://4zida.rs/prodaja-stanova/beograd/stan/1234567890abcdef", asking_price_eur: 180000, details: {} }], 24, "project", {
+    fetch: async () => ({ status: 200, html: '<meta property="og:image" content="https://resizer2.4zida.rs/listing.jpg"><script type="application/ld+json">{"@type":"Offer","price":180000}</script>' }),
+    patch: async (path, value) => { update = value; }, record: async () => {},
+  });
+  assert.deepEqual(update.details.photoUrls, ["https://resizer2.4zida.rs/listing.jpg"]);
+});
+
 test("an unchanged first price check is quiet and recent checks are not repeated", async () => {
   const row = { id: "listing", source_url: "https://example.com/listing", asking_price_eur: 175000, details: {} };
   let updated;
