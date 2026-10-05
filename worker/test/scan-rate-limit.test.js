@@ -40,8 +40,8 @@ test("restart preserves the remaining minute rather than allowing an immediate r
 
 test("actual search pages and old/new checks use the same gate", async () => {
   const env = setup({ queue: [
-    { kind: "existing", url: "https://example.com/old", listingId: "old" },
-    { kind: "new", url: "https://example.com/new" },
+    { kind: "existing", url: "https://4zida.rs/old", listingId: "old" },
+    { kind: "new", url: "https://4zida.rs/new" },
   ] });
   const request = createScanRequestGate(env.store, env);
   const starts = [];
@@ -53,7 +53,7 @@ test("actual search pages and old/new checks use the same gate", async () => {
   await Promise.all([
     searchSweep(topic, "project", env.store, {
       request, now: env.now, repo: async () => "repo", listings: async () => [], record: async () => {},
-      searches: async () => [{ url: "https://example.com/search1" }, { url: "https://example.com/search2" }],
+      searches: async () => [{ url: "https://4zida.rs/search1" }, { url: "https://4zida.rs/search2" }],
       fetch: async () => { starts.push({ kind: "search", at: env.now() }); return { status: 200, html: "" }; },
     }),
     (async () => { while (await checkNext(topic, "project", env.store, checks)) {} })(),
@@ -64,7 +64,7 @@ test("actual search pages and old/new checks use the same gate", async () => {
 });
 
 test("stopping during the minute wait leaves the object queued and unchecked", async () => {
-  const env = setup({ lastRequestAt: new Date(initialTime).toISOString(), queue: [{ kind: "new", url: "https://example.com/new" }] });
+  const env = setup({ lastRequestAt: new Date(initialTime).toISOString(), queue: [{ kind: "new", url: "https://4zida.rs/new" }] });
   const shutdown = new AbortController();
   let processed = false;
   const request = createScanRequestGate(env.store, { now: env.now, signal: shutdown.signal,

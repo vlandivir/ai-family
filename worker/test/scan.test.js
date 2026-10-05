@@ -14,7 +14,7 @@ test("reads an Offer nested inside listing JSON-LD with script attributes", () =
 
 test("first automatic price check compares against the catalog and returns the updated card", async () => {
   const updates = [], events = [];
-  const row = { id: "listing", catalog_number: 182, address: "Белград, улица 1", status: "fit", asking_price_eur: 180000, source_url: "https://example.com/listing", details: {} };
+  const row = { id: "listing", catalog_number: 182, address: "Белград, улица 1", status: "fit", asking_price_eur: 180000, source_url: "https://4zida.rs/listing", details: {} };
   const changes = await recheck([row], 24, "project", {
     fetch: async () => ({ status: 200, html: '<script type="application/ld+json">{"@type":"Offer","price":175000}</script>' }),
     patch: async (path, update) => updates.push(update),
@@ -27,7 +27,7 @@ test("first automatic price check compares against the catalog and returns the u
   assert.match(changes[0], /Объект №182/);
   assert.match(changes[0], /Адрес: Белград, улица 1/);
   assert.match(changes[0], /Статус: Подходит/);
-  assert.match(changes[0], /https:\/\/example.com\/listing/);
+  assert.match(changes[0], /https:\/\/4zida.rs\/listing/);
 });
 
 test("daily check stores photo links from the already fetched listing page", async () => {
@@ -40,7 +40,7 @@ test("daily check stores photo links from the already fetched listing page", asy
 });
 
 test("an unchanged first price check is quiet and recent checks are not repeated", async () => {
-  const row = { id: "listing", source_url: "https://example.com/listing", asking_price_eur: 175000, details: {} };
+  const row = { id: "listing", source_url: "https://4zida.rs/listing", asking_price_eur: 175000, details: {} };
   let updated;
   let fetches = 0;
   const dependencies = {
@@ -55,7 +55,7 @@ test("an unchanged first price check is quiet and recent checks are not repeated
 for (const row of [{ status: "excluded" }, { status: "reference" }, { status: "new", fit: "исключён — первый этаж" }, { status: "conditional" }, { status: "new", fit: "подходит — хороший вариант" }]) {
   test(`price monitoring only notifies previously interesting objects: ${JSON.stringify(row)}`, async () => {
     let updated;
-    const notifications = await recheck([{ ...row, id: "listing", catalog_number: 123, asking_price_eur: 180000, source_url: "https://example.com/listing", details: {} }], 24, "project", {
+    const notifications = await recheck([{ ...row, id: "listing", catalog_number: 123, asking_price_eur: 180000, source_url: "https://4zida.rs/listing", details: {} }], 24, "project", {
       fetch: async () => ({ status: 200, html: '<script type="application/ld+json">{"@type":"Offer","price":175000}</script>' }),
       patch: async (path, value) => { updated = value; }, record: async () => {},
     });
@@ -66,7 +66,7 @@ for (const row of [{ status: "excluded" }, { status: "reference" }, { status: "n
 
 test("removal is sent once and only for previously suitable objects", async () => {
   for (const [status, availabilityStatus, expected] of [["fit", "active", 1], ["fit", "removed", 0], ["excluded", "active", 0]]) {
-    const changes = await recheck([{ id: "listing", status, source_url: "https://example.com/listing", details: { availabilityStatus } }], 24, "project", {
+    const changes = await recheck([{ id: "listing", status, source_url: "https://4zida.rs/listing", details: { availabilityStatus } }], 24, "project", {
       fetch: async () => ({ status: 404 }), patch: async () => {}, record: async () => {},
     });
     assert.equal(changes.length, expected);
@@ -77,7 +77,7 @@ test("house price changes and removals update the database quietly", async () =>
   for (const status of [200, 404]) {
     const updates = [];
     const changes = await recheck([{ id: "house", status: "fit", asking_price_eur: 180000,
-      source_url: "https://example.com/house", details: { category: "houses" } }], 24, "project", {
+      source_url: "https://4zida.rs/house", details: { category: "houses" } }], 24, "project", {
       fetch: async () => ({ status, html: '<script type="application/ld+json">{"@type":"Offer","price":175000}</script>' }),
       patch: async (path, row) => updates.push(row), record: async () => {},
     });

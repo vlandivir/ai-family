@@ -40,7 +40,7 @@ test("a temporary startup database failure retries instead of permanently disabl
 });
 
 test("startup removes historically rejected URLs from the durable queue", async () => {
-  const rejected = "https://example.com/rejected";
+  const rejected = "https://4zida.rs/rejected";
   const { store } = memoryStore({ version: 2, queue: [{ kind: "new", scenario: "living", url: rejected }] });
   const worker = startScan({ ...basics, store, search: async () => false, next: async () => false,
     get: async path => path.startsWith("projects?") ? [{ id: "project" }]
@@ -57,9 +57,9 @@ test("startup removes historically rejected URLs from the durable queue", async 
 
 test("background checker drains a mixed queue continuously and never checks two listings concurrently", { timeout: 2000 }, async () => {
   const { store } = memoryStore({ version: 2, queue: [
-    { kind: "existing", listingId: "old", url: "https://example.com/old" },
+    { kind: "existing", listingId: "old", url: "https://4zida.rs/old" },
     { kind: "new", url },
-    { kind: "existing", listingId: "other", url: "https://example.com/other" },
+    { kind: "existing", listingId: "other", url: "https://4zida.rs/other" },
   ] });
   const started = deferred(), release = deferred(), done = deferred();
   let active = 0, peak = 0;
@@ -85,7 +85,7 @@ test("background checker drains a mixed queue continuously and never checks two 
 });
 
 test("independent search persists newly discovered work while the checker is busy", { timeout: 2000 }, async () => {
-  const memory = memoryStore({ version: 2, queue: [{ kind: "existing", listingId: "old", url: "https://example.com/old" }] });
+  const memory = memoryStore({ version: 2, queue: [{ kind: "existing", listingId: "old", url: "https://4zida.rs/old" }] });
   const started = deferred(), release = deferred(), discovered = deferred(), drained = deferred();
   const order = [];
   const worker = startScan({ ...basics, store: memory.store,
@@ -114,7 +114,7 @@ test("independent search persists newly discovered work while the checker is bus
 
 test("shutdown waits for both active lanes and starts no next listing", { timeout: 2000 }, async () => {
   const { store } = memoryStore({ version: 2, queue: [
-    { kind: "existing", listingId: "old", url: "https://example.com/old" },
+    { kind: "existing", listingId: "old", url: "https://4zida.rs/old" },
     { kind: "new", url },
   ] });
   const checkStarted = deferred(), searchStarted = deferred(), checkRelease = deferred(), searchRelease = deferred();
@@ -167,7 +167,7 @@ test("full search sweep skips blocked sites, follows filtered pagination and ded
 test("a completed sweep runs again at exactly twelve hours, not earlier", async () => {
   const { store } = memoryStore();
   let clock = time, fetches = 0;
-  const deps = { repo: async () => "/repo", searches: async () => [{ url: "https://example.com/search" }], listings: async () => [], record, now: () => clock,
+  const deps = { repo: async () => "/repo", searches: async () => [{ url: "https://4zida.rs/search" }], listings: async () => [], record, now: () => clock,
     fetch: async () => { fetches++; return { status: 200, html: "" }; },
   };
   assert.equal(await searchSweep(topic, "project", store, deps), true);
@@ -183,7 +183,7 @@ test("unfinished search resumes its durable cursor after restart without repeati
   const memory = memoryStore();
   let stopping = false;
   const fetched = [];
-  const entries = [{ url: "https://example.com/first" }, { url: "https://example.com/second" }];
+  const entries = [{ url: "https://4zida.rs/first" }, { url: "https://4zida.rs/second" }];
   await searchSweep(topic, "project", memory.store, {
     repo: async () => "/repo", searches: async () => entries, listings: async () => [], record, now: () => time,
     stopped: () => stopping,

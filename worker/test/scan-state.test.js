@@ -4,7 +4,7 @@ import { catalogTasks, checkNext, checkTask, publishQueueStatus, readListings, r
 import { claimTask, createScanStore, dayMs, enqueueTasks, finishTask, normalizeScanState, queueSnapshot, dailyAnalysisLimit, dailyHouseAnalysisLimit } from "../src/scan-state.js";
 
 const now = Date.parse("2026-09-29T10:00:00Z");
-const task = (name, kind = "new") => ({ kind, url: `https://example.com/${name}` });
+const task = (name, kind = "new") => ({ kind, url: `https://4zida.rs/${name}` });
 
 function memoryStore(value = {}) {
   let saved;
@@ -13,7 +13,7 @@ function memoryStore(value = {}) {
 }
 
 test("migrates the entire legacy queue without truncation and recovers interrupted checks", () => {
-  const legacy = { pending: ["https://example.com/pending"], queue: Array.from({ length: 150 }, (_, i) => JSON.stringify(task(i))) };
+  const legacy = { pending: ["https://4zida.rs/pending"], queue: Array.from({ length: 150 }, (_, i) => JSON.stringify(task(i))) };
   const migrated = normalizeScanState(legacy, now);
   assert.equal(migrated.queue.length, 151);
   const first = claimTask(migrated, now);
@@ -40,8 +40,8 @@ test("serializes simultaneous search and checker writes without losing queued UR
 
 test("canonical URL aliases are deduplicated and a failed check waits exactly 24 hours", () => {
   const state = normalizeScanState({}, now);
-  enqueueTasks(state, [{ ...task("one"), sourceUrls: ["https://www.example.com/alias?utm=1"] }]);
-  enqueueTasks(state, [{ kind: "new", url: "https://example.com/alias" }]);
+  enqueueTasks(state, [{ ...task("one"), sourceUrls: ["https://www.4zida.rs/alias?utm=1"] }]);
+  enqueueTasks(state, [{ kind: "new", url: "https://4zida.rs/alias" }]);
   assert.equal(state.queue.length, 1);
   const claimed = claimTask(state, now);
   assert.equal(claimTask(state, now), null);
@@ -86,8 +86,8 @@ test("catalog loading paginates past 1000 and queues recent rows for their next 
   const paths = [];
   const rows = await readListings("project", async path => {
     paths.push(path);
-    return path.endsWith("offset=0") ? Array.from({ length: 1000 }, (_, id) => ({ id, source_url: `https://example.com/${id}`, details: {} }))
-      : [{ id: "recent", source_url: "https://example.com/recent", details: { availabilityCheckedAt: new Date(now).toISOString() } }];
+    return path.endsWith("offset=0") ? Array.from({ length: 1000 }, (_, id) => ({ id, source_url: `https://4zida.rs/${id}`, details: {} }))
+      : [{ id: "recent", source_url: "https://4zida.rs/recent", details: { availabilityCheckedAt: new Date(now).toISOString() } }];
   });
   assert.equal(rows.length, 1001);
   assert.match(paths[1], /offset=1000$/);
@@ -188,7 +188,7 @@ test("initial rejection logs its reason and never enters the notification queue"
 test("queue snapshot explains readiness and groups work by source and scenario", () => {
   const state = normalizeScanState({ queue: [
     { ...task("ready"), scenario: "living" },
-    { kind: "new", scenario: "houses", url: "https://4zida.rs/prodaja-kuca/beograd/example/1234567890abcdef", availableAt: now + dayMs },
+    { kind: "new", scenario: "houses", url: "https://cityexpert.rs/prodaja-nekretnina/beograd/123/example", availableAt: now + dayMs },
   ], dismissedUrls: { "https://example.com/rejected": { result: "excluded" } } }, now);
   const snapshot = queueSnapshot(state, now);
   assert.equal(snapshot.queueTotal, 2);
@@ -232,6 +232,23 @@ test("blocked sources and inspected information pages stay out after restart", (
   assert.deepEqual(state.queue.map(x => x.url), [task("allowed").url]);
   enqueueTasks(state, [{ kind: "new", url: inspected }]);
   assert.equal(state.queue.length, 1);
+});
+
+test("only listing platforms and aggregators enter the scan queue", () => {
+  const state = normalizeScanState({ queue: [
+    { kind: "existing", scenario: "newbuild", url: "https://newport.rs/" },
+    { kind: "existing", scenario: "newbuild", url: "https://deltaland.rs/project" },
+    { kind: "existing", scenario: "newbuild", url: "https://google.com/maps/search/example" },
+    { kind: "existing", scenario: "living", url: "Адрес без ссылки" },
+    { kind: "existing", scenario: "newbuild", url: "https://4zida.rs/novogradnja/project/123/456" },
+    { kind: "existing", scenario: "living", url: "https://cityexpert.rs/prodaja-nekretnina/beograd/123/example" },
+    { kind: "existing", scenario: "living", url: "https://oglasi.rs/oglas/example" },
+    { kind: "existing", scenario: "living", url: "https://estitor.com/rs/nekretnine/example/id-1" },
+    { kind: "existing", scenario: "living", url: "https://nadjidom.com/sr/details/1/example" },
+  ] }, now);
+  assert.deepEqual(state.queue.map(item => new URL(item.url).hostname), [
+    "4zida.rs", "cityexpert.rs", "oglasi.rs", "estitor.com", "nadjidom.com",
+  ]);
 });
 
 test("information pages are inspected once even if their first response fails", async () => {

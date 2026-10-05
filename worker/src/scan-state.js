@@ -6,8 +6,15 @@ export const dailyAnalysisLimit = 500;
 export const dailyHouseAnalysisLimit = 100;
 
 export const scenarioOrder = ["rental", "living", "newbuild", "houses"];
+const listingSourceHosts = ["4zida.rs", "cityexpert.rs", "oglasi.rs", "estitor.com", "nadjidom.com"];
 export function blockedScanUrl(value) {
-  try { return /^(?:www\.)?(?:nekretnine\.rs|halooglasi\.com)$/.test(new URL(value).hostname); } catch { return false; }
+  try {
+    const hostname = new URL(value).hostname.replace(/^www\./, "");
+    if (/^(?:nekretnine\.rs|halooglasi\.com)$/.test(hostname)) return true;
+    return !listingSourceHosts.some(host => hostname === host || hostname.endsWith(`.${host}`));
+  } catch {
+    return true;
+  }
 }
 export function informationPage(value) {
   try {
