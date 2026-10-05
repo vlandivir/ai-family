@@ -21,7 +21,7 @@ function memoryStore(initial = {}) {
 const record = async () => {};
 const basics = { get: async path => path.startsWith("projects?") ? [{ id: "project" }] : [], loadTopic: async () => topic,
   listings: async () => [], notify: async () => {}, now: () => time, idleMs: 60_000,
-  request: operation => operation() };
+  request: operation => operation(), publish: async () => {} };
 
 test("a temporary startup database failure retries instead of permanently disabling both workers", { timeout: 2000 }, async () => {
   const { store } = memoryStore();
@@ -37,6 +37,22 @@ test("a temporary startup database failure retries instead of permanently disabl
   });
   try { await started.promise; assert.equal(attempts, 2); }
   finally { await worker.stop(); }
+});
+
+test("startup removes historically rejected URLs from the durable queue", async () => {
+  const rejected = "https://example.com/rejected";
+  const { store } = memoryStore({ version: 2, queue: [{ kind: "new", scenario: "living", url: rejected }] });
+  const worker = startScan({ ...basics, store, search: async () => false, next: async () => false,
+    get: async path => path.startsWith("projects?") ? [{ id: "project" }]
+      : path.startsWith("agent_jobs?source=eq.scan") && path.includes("offset=0") ? [{ payload: { url: rejected }, finished_at: new Date(time).toISOString(), result: { scanResult: "excluded", reason: "район" } }]
+        : [],
+  });
+  try {
+    await worker.ready;
+    const state = await store.read();
+    assert.equal(state.queue.length, 0);
+    assert.equal(state.dismissedUrls[rejected].reason, "район");
+  } finally { await worker.stop(); }
 });
 
 test("background checker drains a mixed queue continuously and never checks two listings concurrently", { timeout: 2000 }, async () => {

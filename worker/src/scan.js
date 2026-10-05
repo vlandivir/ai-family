@@ -1,12 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { dbGet, dbInsert, dbPatch } from "./db.js";
+import { dbGet, dbInsert, dbPatch, dbUpsert } from "./db.js";
 import { ensureRepo, runListing } from "./queue.js";
 import { interestingListing } from "./listing-policy.js";
 import { extractListingPhotos } from "./listing-photos.js";
 import { sendMessage } from "./telegram/poll.js";
 import { cardText } from "./catalog-lookup.js";
-import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, enqueueTasks, finishTask, searchEveryMs, blockedScanUrl, scenarioPriority, informationPage } from "./scan-state.js";
+import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, dismissTask, enqueueTasks, finishTask, queueSnapshot, searchEveryMs, blockedScanUrl, scenarioPriority, informationPage } from "./scan-state.js";
 import { createScanRequestGate } from "./scan-rate-limit.js";
 export { canonicalUrl, dailyAnalysisLimit } from "./scan-state.js";
 
@@ -19,6 +19,31 @@ export async function recordScan(projectId, event, { insert = dbInsert } = {}) {
       error: event.error ? String(event.error).slice(0, 500) : null });
   } catch (error) {
     console.error("scan log", error.message);
+  }
+}
+
+export async function publishQueueStatus(projectId, store, { upsert = dbUpsert, now = Date.now } = {}) {
+  try {
+    const snapshot = queueSnapshot(await store.read(), now());
+    await upsert("scan_queue_status", {
+      project_id: projectId,
+      updated_at: new Date(now()).toISOString(),
+      queue_total: snapshot.queueTotal,
+      ready_now: snapshot.ready,
+      waiting: snapshot.waiting,
+      notifications: snapshot.notifications,
+      dismissed_total: snapshot.dismissedTotal,
+      apartment_used: snapshot.apartmentUsed,
+      apartment_limit: snapshot.apartmentLimit,
+      house_used: snapshot.houseUsed,
+      house_limit: snapshot.houseLimit,
+      active_task: snapshot.activeTask,
+      search_state: snapshot.searchState,
+      by_source: snapshot.bySource,
+      by_scenario: snapshot.byScenario,
+    }, "project_id");
+  } catch (error) {
+    console.error("scan queue status", error.message);
   }
 }
 
@@ -276,6 +301,7 @@ export async function searchSweep(topic, projectId, store, {
   repo = ensureRepo, searches = readSearches, listings = readListings, fetch = fetchPage,
   record = recordScan, now = Date.now, stopped = () => false, wake = () => {},
   request = operation => operation(),
+  status = async () => {},
 } = {}) {
   const state = await store.read();
   if (!searchDue(state, now()) || stopped()) return false;
@@ -321,6 +347,7 @@ export async function searchSweep(topic, projectId, store, {
       return value.queue.length - before;
     });
     wake();
+    await status(projectId, store);
     await record(projectId, { source_url: entry.url, action: "search_page",
       result: error ? "fetch_error" : page.status !== 200 ? "http_error" : found.length ? "scanned" : "no_listing_links",
       http_status: page?.status, error: error?.message, details: { foundCount: found.length, queuedCount } });
@@ -370,6 +397,7 @@ export async function sendScanNotifications(store, { get = dbGet, send = sendMes
 export async function checkNext(topic, projectId, store, {
   process = checkTask, record = recordScan, now = Date.now,
   request = operation => operation(),
+  status = async () => {},
 } = {}) {
   // Do not reserve a minute or mark an object checked when no task is ready.
   if (!claimTask(await store.read(), now())) return false;
@@ -379,14 +407,18 @@ export async function checkNext(topic, projectId, store, {
     let notifications = [], error, outcome;
     await record(projectId, { source_url: task.url, listing_id: task.listingId,
       action: task.kind === "new" ? "analyze" : "recheck", result: "started" });
+    await status(projectId, store);
     try {
       outcome = await process(task, topic, projectId);
       notifications = Array.isArray(outcome) ? outcome : outcome?.notifications || [];
     } catch (caught) { error = caught; }
     await store.update(state => {
-      if (informationPage(task.url) || outcome?.scanResult === "not_listing") state.inspectedPages[task.url] = task.checkedAt;
+      const terminal = ["excluded", "over_budget", "reference", "not_listing"].includes(outcome?.scanResult);
+      if (informationPage(task.url)) state.inspectedPages[task.url] = task.checkedAt;
+      if (task.kind === "new" && terminal) dismissTask(state, task, outcome.scanResult, outcome?.details?.reason);
       finishTask(state, task, { retry: Boolean(error) && !informationPage(task.url), notifications });
     });
+    await status(projectId, store);
     if (error) {
       console.error("scan check", error.message);
       await record(projectId, { source_url: task.url, listing_id: task.listingId,
@@ -408,6 +440,7 @@ export function startScan({
   next = checkNext, notify = sendScanNotifications, now = Date.now,
   idleMs = 60_000,
   request,
+  publish = publishQueueStatus,
 } = {}) {
   let stopping = false;
   const shutdown = new AbortController();
@@ -431,19 +464,24 @@ export function startScan({
         projectId = (await get(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0]?.id;
         if (!projectId) throw new Error("Проект фонового обхода не найден");
         await store.read();
-        // Recover past non-listing verdicts so existing investor pages are never reopened.
+        // Recover terminal verdicts so rejected links are never reopened after a restart.
         for (let offset = 0; ; offset += 1000) {
           const pages = await get(`agent_jobs?source=eq.scan&project_id=eq.${projectId}&select=payload,finished_at,result&limit=1000&offset=${offset}`);
           await store.update(state => {
             for (const page of pages) {
               const url = canonicalUrl(page.payload?.url);
-              if (url && (informationPage(url) || page.result?.scanResult === "not_listing")) state.inspectedPages[url] = page.finished_at || new Date(now()).toISOString();
+              const result = page.result?.scanResult;
+              if (url && informationPage(url)) state.inspectedPages[url] = page.finished_at || new Date(now()).toISOString();
+              if (url && ["excluded", "over_budget", "reference", "not_listing"].includes(result)) {
+                state.dismissedUrls[url] = { checkedAt: page.finished_at || new Date(now()).toISOString(), result, reason: page.result?.reason || null };
+              }
             }
-            state.queue = state.queue.filter(task => !state.inspectedPages[task.url]);
+            state.queue = state.queue.filter(task => !state.inspectedPages[task.url] && !state.dismissedUrls[task.url]);
           });
           if (pages.length < 1000) break;
         }
         await recoverScanJobs(projectId, { get, patch });
+        await publish(projectId, store, { now });
         return;
       } catch (error) {
         if (!stopping) console.error("scan startup", error.message);
@@ -461,11 +499,12 @@ export function startScan({
         if (now() - lastRefresh >= idleMs) {
           const rows = await listings(projectId);
           await store.update(state => enqueueTasks(state, catalogTasks(rows)));
+          await publish(projectId, store, { now });
           lastRefresh = now();
         }
         try { await notify(store); } catch (error) { console.error("scan notify", error.message); }
         if (stopping) break;
-        if (await next(topic, projectId, store, { now, request })) continue;
+        if (await next(topic, projectId, store, { now, request, status: publish })) continue;
       } catch (error) { if (!stopping) console.error("scan checker", error.message); }
       await wait(observed);
     }
@@ -475,7 +514,7 @@ export function startScan({
     if (!projectId) return;
     while (!stopping) {
       const observed = generation;
-      try { await search(topic, projectId, store, { stopped: () => stopping, wake, now, request }); }
+      try { await search(topic, projectId, store, { stopped: () => stopping, wake, now, request, status: publish }); }
       catch (error) { if (!stopping) console.error("scan searcher", error.message); }
       if (!stopping) await wait(observed);
     }

@@ -35,6 +35,7 @@ const scanResults: Record<string, string> = {
   processed: "Карточка обработана", failed: "Разбор не удался",
   excluded: "Исключён при отборе", reference: "Только ориентир", not_listing: "Не объявление", updated: "Объект изменился",
 };
+const scenarioLabels: Record<string, string> = { rental: "Аренда", living: "Квартиры", newbuild: "Новостройки", houses: "Дома" };
 
 function content(text: string) {
   return text.split(/(https?:\/\/[^\s<>]+)/g).map((part, index) =>
@@ -64,7 +65,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
   const user = await allowedUser();
   if (!user) return <main className="gate"><div className="gate-card"><div className="brand-mark">◈</div><p className="eyebrow">AI FAMILY / МОНИТОРИНГ</p><h1>Работа семьи<br />в одном месте.</h1><p className="gate-desc">Войдите через разрешённый Google аккаунт, чтобы видеть состояние всех задач и диалогов.</p><a className="google-button" href="/auth/login"><span className="google-g">G</span> Войти через Google <span aria-hidden>↗</span></a><p className="gate-note">Доступ есть только у адресов из настроек.</p></div></main>;
 
-  const { branches, scanEvents, totalJobs, updatedAt } = await dashboardData(user.email!);
+  const { branches, scanEvents, queueStatuses, totalJobs, updatedAt } = await dashboardData(user.email!);
   const mediaReady = Boolean(process.env.HETZNER_S3_ENDPOINT && process.env.HETZNER_S3_BUCKET &&
     process.env.HETZNER_S3_ACCESS_KEY && process.env.HETZNER_S3_SECRET_KEY);
   const { chat } = await searchParams;
@@ -109,6 +110,19 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
         </> : <div className="conversation-empty">Диалоги появятся после первого сообщения боту.</div>}
       </section>
     </div>
+    <section className="queue-section" aria-label="Текущая очередь обхода">
+      <div className="scan-heading"><div><p className="eyebrow">КВАРТИРЫ / ОЧЕРЕДЬ</p><h2>Текущая очередь</h2><p>Что готово к проверке, что ждёт суточного интервала и как расходуются квоты.</p></div></div>
+      {queueStatuses.length ? queueStatuses.map((status) => <article className="queue-card" key={status.project_id}>
+        <div className="queue-card-head"><div><strong>{status.projectName}</strong><small>Обновлено {time(status.updated_at)}</small></div><span>{status.queue_total} задач</span></div>
+        <div className="queue-metrics"><span><b>{status.ready_now}</b> готовы сейчас</span><span><b>{status.waiting}</b> ждут</span><span><b>{status.apartment_used}/{status.apartment_limit}</b> квартиры сегодня</span><span><b>{status.house_used}/{status.house_limit}</b> дома сегодня</span><span><b>{status.dismissed_total}</b> ссылок исключено навсегда</span></div>
+        {status.active_task?.url && <div className="queue-active"><strong>Сейчас проверяется:</strong> <a href={status.active_task.url} target="_blank" rel="noopener noreferrer">{scenarioLabels[status.active_task.scenario || ""] || status.active_task.scenario || "объявление"}</a></div>}
+        {status.search_state && <div className="queue-active"><strong>Поиск идёт:</strong> проверено страниц {status.search_state.visited || 0}, осталось {status.search_state.remaining || 0}</div>}
+        <div className="queue-groups">
+          <div><h3>По типу</h3>{Object.entries(status.by_scenario || {}).map(([name, group]) => <p key={name}><strong>{scenarioLabels[name] || name}</strong><span>{group.total} всего · {group.ready} готовы · {group.waiting} ждут<br />{group.new} новых · {group.existing} старых</span></p>)}</div>
+          <div><h3>По источнику</h3>{Object.entries(status.by_source || {}).map(([name, group]) => <p key={name}><strong>{name}</strong><span>{group.total} всего · {group.ready} готовы · {group.waiting} ждут<br />{group.new} новых · {group.existing} старых</span></p>)}</div>
+        </div>
+      </article>) : <p className="scan-empty">Состояние появится после запуска обновлённого агента.</p>}
+    </section>
     <section className="scan-section" aria-label="Журнал обхода">
       <div className="scan-heading"><div><p className="eyebrow">КВАРТИРЫ / ОБХОД</p><h2>Журнал проверки объявлений</h2><p>Последние 100 действий поиска и проверки карточек.</p></div><span>{scanEvents.length} записей</span></div>
       <div className="scan-list">

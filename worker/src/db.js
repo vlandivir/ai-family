@@ -28,6 +28,11 @@ export function dbInsert(table, row) {
   return rest(table, { method: "POST", body: row });
 }
 
+export function dbUpsert(table, row, onConflict) {
+  const suffix = onConflict ? `?on_conflict=${encodeURIComponent(onConflict)}` : "";
+  return rest(`${table}${suffix}`, { method: "POST", body: row, prefer: "resolution=merge-duplicates,return=representation" });
+}
+
 export function dbPatch(path, row) {
   return rest(path, { method: "PATCH", body: row });
 }

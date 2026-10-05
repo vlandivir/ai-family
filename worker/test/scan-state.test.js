@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { catalogTasks, checkNext, checkTask, readListings, recordScan, recoverScanJobs } from "../src/scan.js";
-import { claimTask, createScanStore, dayMs, enqueueTasks, finishTask, normalizeScanState, dailyAnalysisLimit } from "../src/scan-state.js";
+import { catalogTasks, checkNext, checkTask, publishQueueStatus, readListings, recordScan, recoverScanJobs } from "../src/scan.js";
+import { claimTask, createScanStore, dayMs, enqueueTasks, finishTask, normalizeScanState, queueSnapshot, dailyAnalysisLimit, dailyHouseAnalysisLimit } from "../src/scan-state.js";
 
 const now = Date.parse("2026-09-29T10:00:00Z");
 const task = (name, kind = "new") => ({ kind, url: `https://example.com/${name}` });
@@ -64,6 +64,22 @@ test("raised new quota does not stop old checks and resets on the next Belgrade 
   finishTask(state, old);
   assert.equal(claimTask(state, now), null);
   assert.equal(claimTask(state, now + dayMs).kind, "new");
+});
+
+test("houses use a separate residual quota and never consume the apartment quota", () => {
+  const state = normalizeScanState({}, now);
+  enqueueTasks(state, Array.from({ length: dailyHouseAnalysisLimit + 1 }, (_, i) => ({ ...task(`house-${i}`), scenario: "houses" })));
+  enqueueTasks(state, [{ ...task("apartment"), scenario: "living" }]);
+  assert.equal(claimTask(state, now).scenario, "living");
+  finishTask(state, state.activeTask);
+  for (let i = 0; i < dailyHouseAnalysisLimit; i++) {
+    const claimed = claimTask(state, now);
+    assert.equal(claimed.scenario, "houses");
+    finishTask(state, claimed);
+  }
+  assert.equal(claimTask(state, now), null);
+  assert.equal(state.apartmentAnalyzed, 1);
+  assert.equal(state.houseAnalyzed, dailyHouseAnalysisLimit);
 });
 
 test("catalog loading paginates past 1000 and queues recent rows for their next due time", async () => {
@@ -163,6 +179,36 @@ test("initial rejection logs its reason and never enters the notification queue"
   assert.deepEqual(saved().notifications, []);
   assert.equal(events.at(-1).result, "excluded");
   assert.equal(events.at(-1).details.reason, "Первый этаж");
+  const restarted = normalizeScanState(saved(), now + dayMs * 5);
+  enqueueTasks(restarted, [task("excluded")]);
+  assert.equal(restarted.queue.length, 0);
+  assert.equal(restarted.dismissedUrls[task("excluded").url].result, "excluded");
+});
+
+test("queue snapshot explains readiness and groups work by source and scenario", () => {
+  const state = normalizeScanState({ queue: [
+    { ...task("ready"), scenario: "living" },
+    { kind: "new", scenario: "houses", url: "https://4zida.rs/prodaja-kuca/beograd/example/1234567890abcdef", availableAt: now + dayMs },
+  ], dismissedUrls: { "https://example.com/rejected": { result: "excluded" } } }, now);
+  const snapshot = queueSnapshot(state, now);
+  assert.equal(snapshot.queueTotal, 2);
+  assert.equal(snapshot.ready, 1);
+  assert.equal(snapshot.waiting, 1);
+  assert.equal(snapshot.byScenario.living.ready, 1);
+  assert.equal(snapshot.byScenario.houses.waiting, 1);
+  assert.equal(snapshot.bySource["4zida.rs"].total, 1);
+  assert.equal(snapshot.dismissedTotal, 1);
+});
+
+test("queue status is published as one project snapshot", async () => {
+  const { store } = memoryStore({ queue: [{ ...task("ready"), scenario: "living" }] });
+  let call;
+  await publishQueueStatus("project", store, { now: () => now, upsert: async (...args) => { call = args; } });
+  assert.deepEqual(call.slice(0, 1), ["scan_queue_status"]);
+  assert.equal(call[1].project_id, "project");
+  assert.equal(call[1].queue_total, 1);
+  assert.equal(call[1].by_scenario.living.ready, 1);
+  assert.equal(call[2], "project_id");
 });
 
 test("ready tasks follow category priority in a restored mixed queue", () => {

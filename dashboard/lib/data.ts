@@ -7,6 +7,16 @@ type Conversation = {
   opened_by: string | null; started_at: string; closed_at: string | null;
 };
 type Project = { id: string; name: string; slug: string };
+type QueueGroup = { total: number; ready: number; waiting: number; new: number; existing: number };
+export type ScanQueueStatus = {
+  project_id: string; updated_at: string; queue_total: number; ready_now: number; waiting: number;
+  notifications: number; dismissed_total: number; apartment_used: number; apartment_limit: number;
+  house_used: number; house_limit: number;
+  active_task: { url?: string; kind?: string; scenario?: string; checkedAt?: string } | null;
+  search_state: { remaining?: number; visited?: number } | null;
+  by_source: Record<string, QueueGroup>; by_scenario: Record<string, QueueGroup>;
+  projectName?: string;
+};
 export type ScanEvent = {
   id: number; project_id: string; listing_id: string | null; created_at: string;
   source_url: string; action: string; result: string;
@@ -51,10 +61,11 @@ async function allRows<T>(path: string): Promise<T[]> {
 }
 
 export async function dashboardData(viewerEmail: string) {
-  const [conversations, projects, scanEvents] = await Promise.all([
+  const [conversations, projects, scanEvents, queueStatuses] = await Promise.all([
     allRows<Conversation>("conversations?select=id,project_id,kind,telegram_chat_id,telegram_topic_id,opened_by,started_at,closed_at&order=started_at.desc"),
     allRows<Project>("projects?select=id,name,slug"),
     rows<ScanEvent>("scan_events?select=id,project_id,listing_id,created_at,source_url,action,result,http_status,error,details&order=created_at.desc&limit=100"),
+    rows<ScanQueueStatus>("scan_queue_status?select=*&order=updated_at.desc"),
   ]);
   const visibleConversations = conversations.filter((conversation) => canViewConversation(
     conversation, viewerEmail,
@@ -97,6 +108,7 @@ export async function dashboardData(viewerEmail: string) {
   return {
     branches,
     scanEvents: scanEvents.map((event) => ({ ...event, projectName: projectById.get(event.project_id)?.name || "Проект" })),
+    queueStatuses: queueStatuses.map((status) => ({ ...status, projectName: projectById.get(status.project_id)?.name || "Проект" })),
     totalJobs: visibleJobs.length,
     updatedAt: new Date().toISOString(),
   };
