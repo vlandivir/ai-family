@@ -9,7 +9,7 @@ import { getChatId } from "./agent/sessions.js";
 import { retryableJobError } from "./agent/jobs.js";
 import { runAgent } from "./agent/run.js";
 import { cardText } from "./catalog-lookup.js";
-import { assessmentStatuses, interestingListing } from "./listing-policy.js";
+import { assessmentStatuses, interestingListing, priceRejected, scanBudgetEur } from "./listing-policy.js";
 import { photoUrlsFromCard } from "./listing-photos.js";
 import { splitVoiceAnswer } from "./voice.js";
 
@@ -216,12 +216,12 @@ export async function runListing(message, sessionKey, topic, url, queuedJob, {
   const prompt = [
     topic.rule,
     `Ссылка: ${url}`,
-    scan ? "Фоновый обход: до 500 новых разборов в сутки. Приоритет: rental, living, newbuild, houses. Nekretnine.rs и Halo Oglasi автоматически не обходятся, только ручные ссылки. Эти указания покупателя важнее прежних правил файла." : "",
+    scan ? "Фоновый обход: до 500 новых разборов в сутки. Бюджет всех типов: 240000 EUR. Маршрут до Шестой гимназии не является критерием. Приоритет: новые квартиры, подходящие, с оговорками, исключённые только по цене, дома. Nekretnine.rs и Halo Oglasi автоматически не обходятся, только ручные ссылки. Эти указания покупателя важнее прежних правил файла." : "",
     scan?.scenario ? `Сценарий поиска: ${scan.scenario}. Оцени объект по этому сценарию.` : "",
-    scan?.maxPriceEur ? `Бюджет поиска: не больше ${scan.maxPriceEur} EUR. Укажи достоверную цену в asking_price_eur.` : "",
+    scan?.maxPriceEur ? `Бюджет поиска: не больше ${scanBudgetEur} EUR. Укажи достоверную цену в asking_price_eur.` : "",
     scan ? "Во время фонового разбора делай запросы к сайтам не чаще одного раза в 60 секунд. Объявление открывай один раз, повторные запросы к нему в этом разборе не делай." : "",
     scan ? "Это первичный автоматический отбор. Обязательно поставь status: fit (подходит), conditional (интересный с оговоркой), excluded (исключён) или reference (только ориентир). При нарушении жёстких критериев выбирай excluded. Новые excluded/reference квартир не сохраняются в каталог и не отправляются в чат. Дома сохраняются при любом статусе для сравнения цен по районам и динамики, без сообщений в чат. Не называй исключённый объект интересным." : "",
-    scan ? "Дома никогда не отправляй в чат. В чат сообщаем только о новых fit/conditional и о существенных изменениях ранее подходящих объектов. Старые исключённые и ориентиры не возвращай в активную подборку. Неизменившиеся объекты, отказы, превышение бюджета и ошибки оставляй в журнале." : "",
+    scan ? "Дома никогда не отправляй в чат. В чат сообщаем только о новых fit/conditional и о существенных изменениях ранее подходящих объектов. Старые исключённые и ориентиры не возвращай в активную подборку, кроме исключений только из-за цены: переоцени их по бюджету 240000 EUR и верни при выполнении всех критериев. Неизменившиеся объекты, отказы, превышение бюджета и ошибки оставляй в журнале." : "",
     "Прочитай APARTMENT_SELECTION_INSTRUCTIONS.md в текущей папке и открой ссылку.",
     "Сначала реши, это страница одного объявления о квартире или доме.",
     "Витрина, каталог, поиск, статья и наша собственная страница — не объявление.",
@@ -351,17 +351,19 @@ async function saveScannedListing(projectId, url, card, prose, scan, { get, inse
   const row = listingRow(projectId, url, card, prose);
   row.status = card.status;
   const banned = districtExclusion(row.address, row.neighborhood);
-  const overBudget = row.asking_price_eur != null && row.asking_price_eur > scan.maxPriceEur;
+  const overBudget = row.asking_price_eur != null && row.asking_price_eur > scanBudgetEur;
+  const priceOnly = overBudget && !banned && (interestingListing(row) || priceRejected(row));
   if (banned || overBudget) row.status = "excluded";
-  const reason = banned ? `Исключённый район: ${banned}` : overBudget ? `Цена выше лимита ${scan.maxPriceEur} EUR` : card.fit || card.notes || prose;
-  if (banned || overBudget) row.fit = reason;
+  const reason = banned ? `Исключённый район: ${banned}` : overBudget ? `Цена выше лимита ${scanBudgetEur} EUR` : card.fit || card.notes || prose;
+  if (banned || overBudget) row.fit = !priceOnly && overBudget && !banned ? `${card.fit || card.notes || prose}; ${reason}` : reason;
+  row.details = { ...row.details, exclusionReason: banned ? 'district' : overBudget ? (priceOnly ? 'over_budget' : 'criteria') : null };
   if (!match && row.details?.category !== "houses" && !interestingListing(row)) {
-    return { scanResult: overBudget ? "over_budget" : row.status, reason, notification: null };
+    return { scanResult: priceOnly ? "over_budget" : row.status, reason, notification: null };
   }
   if (match) {
     const current = { ...match, ...(await get(`listings?id=eq.${match.id}&select=*`))[0] };
     const wasInteresting = interestingListing(current);
-    if (["excluded", "reference"].includes(current.status)) {
+    if (["excluded", "reference"].includes(current.status) && !priceRejected(current)) {
       row.status = current.status;
       row.fit = current.fit;
     }

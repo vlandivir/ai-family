@@ -1,7 +1,9 @@
+import { scanBudgetEur, priceRejected } from "./listing-policy.js";
+export { scanBudgetEur } from "./listing-policy.js";
 import { readJson, writeJson } from "./health.js";
 
 export const dayMs = 24 * 60 * 60 * 1000;
-export const searchEveryMs = dayMs / 2;
+export const searchHours = [0, 6, 8, 10, 12, 14, 16, 18, 20];
 export const dailyAnalysisLimit = 500;
 export const dailyHouseAnalysisLimit = 100;
 
@@ -62,18 +64,18 @@ function legacyTask(value) {
   if (typeof value === "string" && value.startsWith("{")) value = JSON.parse(value);
   if (typeof value === "string") value = { url: value };
   const url = canonicalUrl(value?.url);
-  return url ? { kind: "new", maxPriceEur: 200000, ...value, url } : null;
+  return url ? { kind: "new", ...value, maxPriceEur: scanBudgetEur, url } : null;
 }
 
 export function normalizeScanState(value = {}, now = Date.now()) {
   const legacyAnalyzed = value.analyzed || 0;
   const state = {
-    version: 3, queue: [], checkedUrls: {}, analyzedOn: value.analyzedOn || null,
+    version: 3, policyVersion: 3, queue: [], checkedUrls: {}, analyzedOn: value.analyzedOn || null,
     analyzed: legacyAnalyzed,
     apartmentAnalyzed: value.apartmentAnalyzed ?? 0,
     houseAnalyzed: value.houseAnalyzed ?? (value.version === 3 ? 0 : legacyAnalyzed),
-    lastDiscovery: value.lastDiscovery || null,
-    searchRun: value.searchRun ? { ...value.searchRun, remaining: value.searchRun.remaining.filter(entry => !blockedScanUrl(entry.url)).sort((a, b) => scenarioPriority(a) - scenarioPriority(b)) } : null, activeTask: null,
+    lastDiscovery: value.policyVersion === 3 ? value.lastDiscovery || null : null,
+    searchRun: value.policyVersion === 3 && value.searchRun ? { ...value.searchRun, remaining: value.searchRun.remaining.filter(entry => !blockedScanUrl(entry.url)).sort((a, b) => scenarioPriority(a) - scenarioPriority(b)) } : null, activeTask: null,
     notifications: value.notifications || [],
     lastRequestAt: value.lastRequestAt || null,
     inspectedPages: { ...(value.inspectedPages || {}) },
@@ -85,8 +87,14 @@ export function normalizeScanState(value = {}, now = Date.now()) {
       if (canonicalUrl(url)) state.checkedUrls[canonicalUrl(url)] = new Date(now).toISOString();
     }
   }
+  for (const [url, verdict] of Object.entries(state.dismissedUrls)) {
+    if (verdict.result === 'over_budget' || priceRejected({status:'excluded', fit:verdict.reason})) {
+      delete state.dismissedUrls[url];
+      if (!blockedScanUrl(url) && !state.inspectedPages[url]) state.queue.push({kind:'price',priority:3,url,maxPriceEur:scanBudgetEur,availableAt:(Date.parse(verdict.checkedAt)||0)+dayMs});
+    }
+  }
   const tasks = [...(value.activeTask ? [value.activeTask] : []), ...(value.pending || []), ...(value.queue || [])];
-  const seen = new Set();
+  const seen = new Set(state.queue.map(task => task.url));
   for (const item of tasks) {
     const task = legacyTask(item);
     if (task && !blockedScanUrl(task.url) && !taskUrls(task).some(url => state.inspectedPages[url] || state.dismissedUrls[url]) && !seen.has(task.url)) {
@@ -122,7 +130,7 @@ export function enqueueTasks(state, tasks) {
   for (const task of tasks) {
     const urls = taskUrls(task);
     if (!urls.length || blockedScanUrl(urls[0]) || urls.some(url => queued.has(url) || state.inspectedPages?.[url] || state.dismissedUrls?.[url])) continue;
-    state.queue.push({ ...task, url: urls[0] });
+    state.queue.push({ ...task, maxPriceEur: scanBudgetEur, url: urls[0] });
     urls.forEach(url => queued.add(url));
   }
 }
@@ -151,7 +159,7 @@ export function claimTask(state, now = Date.now()) {
       : state.apartmentAnalyzed >= dailyAnalysisLimit);
     if (blockedScanUrl(task.url) || state.inspectedPages?.[task.url] || state.dismissedUrls?.[task.url] ||
       taskDueAt(state, task) > now || quotaReached) continue;
-    if (index < 0 || scenarioPriority(task) < scenarioPriority(state.queue[index])) index = i;
+    if (index < 0 || taskPriority(task) < taskPriority(state.queue[index]) || (taskPriority(task) === taskPriority(state.queue[index]) && scenarioPriority(task) < scenarioPriority(state.queue[index]))) index = i;
   }
   if (index < 0) return null;
   const [task] = state.queue.splice(index, 1);
@@ -215,4 +223,16 @@ export function finishTask(state, task, { retry = false, notifications = [] } = 
   state.activeTask = null;
   state.notifications.push(...notifications);
   if (retry) enqueueTasks(state, [{ ...task, availableAt: Date.parse(task.checkedAt) + dayMs }]);
+}
+
+export function taskPriority(task) {
+  if ((task.scenario || '').includes('houses') || /prodaja-kuca/.test(task.url)) return 4;
+  return task.kind === 'new' ? 0 : task.priority ?? 2;
+}
+
+export function searchSlot(now = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Belgrade', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(now);
+  const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  const hour = [...searchHours].reverse().find(hour => hour <= Number(value.hour));
+  return `${value.year}-${value.month}-${value.day}T${String(hour).padStart(2, '0')}`;
 }

@@ -2,11 +2,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { dbGet, dbInsert, dbPatch, dbUpsert } from "./db.js";
 import { ensureRepo, runListing } from "./queue.js";
-import { interestingListing } from "./listing-policy.js";
+import { interestingListing, priceRejected, catalogPriority, scanBudgetEur } from "./listing-policy.js";
 import { extractListingPhotos } from "./listing-photos.js";
 import { sendMessage } from "./telegram/poll.js";
 import { cardText } from "./catalog-lookup.js";
-import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, dismissTask, enqueueTasks, finishTask, queueSnapshot, searchEveryMs, blockedScanUrl, scenarioPriority, informationPage } from "./scan-state.js";
+import { canonicalUrl, checkedTime, claimTask, createScanStore, dayMs, dismissTask, enqueueTasks, finishTask, queueSnapshot, searchSlot, blockedScanUrl, scenarioPriority, informationPage } from "./scan-state.js";
 import { createScanRequestGate } from "./scan-rate-limit.js";
 export { canonicalUrl, dailyAnalysisLimit } from "./scan-state.js";
 
@@ -224,10 +224,15 @@ export async function recheck(rows, hours, projectId, { fetch = fetchPage, patch
     }
     const next = priceUpdate(details, price, row.source_url, row.asking_price_eur);
     const update = { details: next.details, asking_price_eur: price };
+    if (price > scanBudgetEur && interestingListing(row)) {
+      update.status = 'excluded';
+      update.fit = `Цена выше лимита ${scanBudgetEur} EUR`;
+      update.details.exclusionReason = 'over_budget';
+    }
     await patch(`listings?id=eq.${row.id}`, update);
     await record(projectId, { listing_id: row.id, source_url: row.source_url, action: "recheck", result: next.changed ? "price_changed" : "unchanged", http_status: page.status, details: { price, previous: next.previous } });
     if (row.details?.category !== "houses" && interestingListing(row) && next.changed && next.previous != null) {
-      changes.push(`Цена изменилась: ${next.previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €\n${cardText({ ...row, asking_price_eur: price })}`);
+      changes.push(`Цена изменилась: ${next.previous.toLocaleString("ru-RU")} € → ${price.toLocaleString("ru-RU")} €\n${cardText({ ...row, ...update })}`);
     }
   }
   return changes;
@@ -237,23 +242,23 @@ export async function readSearches(dir) {
   const config = JSON.parse(await readFile(join(dir, "scan.json"), "utf8"));
   return (config.searches || []).map(entry => typeof entry === "string" ? { url: entry } : entry)
     .filter(entry => entry?.url && !blockedScanUrl(entry.url))
-    .map(entry => ({ ...entry, maxPriceEur: entry.maxPriceEur || 200000 }))
+    .map(entry => ({ ...entry, maxPriceEur: scanBudgetEur }))
     .sort((a, b) => scenarioPriority(a) - scenarioPriority(b));
 }
 
 export async function readListings(projectId, get = dbGet) {
   const rows = [];
   for (let offset = 0; ; offset += 1000) {
-    const page = await get(`listings?project_id=eq.${projectId}&status=not.in.(error,test)&select=id,catalog_number,address,neighborhood,municipality,status,source_url,source_urls,asking_price_eur,details&order=id.asc&limit=1000&offset=${offset}`);
+    const page = await get(`listings?project_id=eq.${projectId}&status=not.in.(error,test)&select=id,catalog_number,address,neighborhood,municipality,status,fit,source_url,source_urls,asking_price_eur,details&order=id.asc&limit=1000&offset=${offset}`);
     rows.push(...page);
     if (page.length < 1000) return rows;
   }
 }
 
 export function catalogTasks(rows) {
-  return rows.filter(row => !blockedScanUrl(row.source_url) && (row.source_url || row.source_urls?.some(Boolean)))
+  return rows.filter(row => catalogPriority(row) !== null && !blockedScanUrl(row.source_url) && (row.source_url || row.source_urls?.some(Boolean)))
     .sort((a, b) => checkedTime(a.details) - checkedTime(b.details))
-    .map(row => ({ kind: "existing", scenario: row.details?.category, listingId: row.id, url: row.source_url || row.source_urls.find(Boolean),
+    .map(row => ({ kind: "existing", priority: catalogPriority(row), priceRejected: priceRejected(row), scenario: row.details?.category, listingId: row.id, url: row.source_url || row.source_urls.find(Boolean),
       sourceUrls: row.source_urls || [], availableAt: checkedTime(row.details) ? checkedTime(row.details) + dayMs : 0 }));
 }
 
@@ -284,7 +289,7 @@ export function paginationUrls(html, baseUrl) {
 
 export function searchDue(state, now = Date.now()) {
   const last = Date.parse(state.lastDiscovery);
-  return Boolean(state.searchRun) || !Number.isFinite(last) || now - last >= searchEveryMs;
+  return Boolean(state.searchRun) || !Number.isFinite(last) || searchSlot(now) > searchSlot(last);
 }
 
 export async function recoverScanJobs(projectId, { get = dbGet, patch = dbPatch } = {}) {
@@ -305,18 +310,22 @@ export async function searchSweep(topic, projectId, store, {
 } = {}) {
   const state = await store.read();
   if (!searchDue(state, now()) || stopped()) return false;
-  if (!state.searchRun) {
+  if (!state.searchRun || !state.lastDiscovery || searchSlot(now()) > searchSlot(Date.parse(state.lastDiscovery))) {
     const dir = await repo(topic.repo, `scan:${topic.project}:search`);
     const entries = await searches(dir);
     await store.update(current => {
       current.lastDiscovery = new Date(now()).toISOString();
-      current.searchRun = { remaining: entries, visited: [] };
+      // Start fresh first pages at every slot without losing unfinished pagination.
+      const freshUrls = new Set(entries.map(entry => entry.url));
+      const continuation = (current.searchRun?.remaining || []).filter(entry => !freshUrls.has(entry.url));
+      current.searchRun = { remaining: [...entries, ...continuation], visited: [] };
     });
   }
   const rows = await listings(projectId);
   const known = knownUrls(rows);
   while (!stopped()) {
     const current = await store.read();
+    if (current.lastDiscovery && searchSlot(now()) > searchSlot(Date.parse(current.lastDiscovery))) return true;
     const entry = current.searchRun?.remaining[0];
     if (entry && blockedScanUrl(entry.url)) {
       await store.update(value => { value.searchRun.remaining.shift(); });
@@ -361,13 +370,17 @@ export async function checkTask(task, topic, projectId, {
   if (task.kind === "existing") {
     const row = (await get(`listings?id=eq.${task.listingId}&select=*`))[0];
     if (!row || row.status === "test" || now() - checkedTime(row.details) < dayMs) return [];
-    return check([{ ...row, source_url: row.source_url || task.url }], 24, projectId);
+    if (catalogPriority(row) === null) return [];
+    if (!priceRejected(row)) return check([{ ...row, source_url: row.source_url || task.url }], 24, projectId);
+    // Reassess price-only exclusions against the current budget and all other criteria.
+    task = { ...task, scenario: row.details?.category };
+
   }
   // Do not pre-fetch a new listing: its dedicated agent opens it once and does the complete analysis.
   const key = `scan:${topic.project}:check`;
   const message = { inGroup: false, chatId: 0, userId: key, text: task.url, filePaths: [] };
   const outcome = await analyze(message, key, { ...topic, scan: {
-    checkedAt: task.checkedAt, maxPriceEur: task.maxPriceEur || 200000, scenario: task.scenario,
+    checkedAt: task.checkedAt, maxPriceEur: scanBudgetEur, scenario: task.scenario,
   } }, task.url);
   if (outcome && typeof outcome === "object") return {
     notifications: outcome.notification ? [outcome.notification] : [],
@@ -413,10 +426,12 @@ export async function checkNext(topic, projectId, store, {
       notifications = Array.isArray(outcome) ? outcome : outcome?.notifications || [];
     } catch (caught) { error = caught; }
     await store.update(state => {
-      const terminal = ["excluded", "over_budget", "reference", "not_listing"].includes(outcome?.scanResult);
-      if (informationPage(task.url)) state.inspectedPages[task.url] = task.checkedAt;
-      if (task.kind === "new" && terminal) dismissTask(state, task, outcome.scanResult, outcome?.details?.reason);
+      if (task.kind !== "existing" && ['excluded', 'reference'].includes(outcome?.scanResult) && !priceRejected({ status: 'excluded', fit: outcome?.details?.reason })) {
+        dismissTask(state, task, outcome.scanResult, outcome?.details?.reason);
+      }
+      if (informationPage(task.url) || outcome?.scanResult === "not_listing") state.inspectedPages[task.url] = task.checkedAt;
       finishTask(state, task, { retry: Boolean(error) && !informationPage(task.url), notifications });
+      if (outcome?.scanResult === 'over_budget') enqueueTasks(state, [{ ...task, kind: 'price', priority: 3, availableAt: Date.parse(task.checkedAt) + dayMs }]);
     });
     await status(projectId, store);
     if (error) {
@@ -464,22 +479,28 @@ export function startScan({
         projectId = (await get(`projects?slug=eq.${topic.project}&select=id&limit=1`))[0]?.id;
         if (!projectId) throw new Error("Проект фонового обхода не найден");
         await store.read();
-        // Recover terminal verdicts so rejected links are never reopened after a restart.
+        // Recover past non-listing verdicts so existing investor pages are never reopened.
+        const latestVerdicts = new Map();
         for (let offset = 0; ; offset += 1000) {
-          const pages = await get(`agent_jobs?source=eq.scan&project_id=eq.${projectId}&select=payload,finished_at,result&limit=1000&offset=${offset}`);
-          await store.update(state => {
-            for (const page of pages) {
-              const url = canonicalUrl(page.payload?.url);
-              const result = page.result?.scanResult;
-              if (url && informationPage(url)) state.inspectedPages[url] = page.finished_at || new Date(now()).toISOString();
-              if (url && ["excluded", "over_budget", "reference", "not_listing"].includes(result)) {
-                state.dismissedUrls[url] = { checkedAt: page.finished_at || new Date(now()).toISOString(), result, reason: page.result?.reason || null };
-              }
-            }
-            state.queue = state.queue.filter(task => !state.inspectedPages[task.url] && !state.dismissedUrls[task.url]);
-          });
+          const pages = await get(`agent_jobs?source=eq.scan&project_id=eq.${projectId}&select=payload,finished_at,result&order=finished_at.asc.nullsfirst,id.asc&limit=1000&offset=${offset}`);
+          for (const page of pages) {
+            const url = canonicalUrl(page.payload?.url);
+            if (url && page.result?.scanResult) latestVerdicts.set(url, page);
+          }
           if (pages.length < 1000) break;
         }
+        await store.update(state => {
+          for (const [url, page] of latestVerdicts) {
+            const verdict = page.result.scanResult;
+            const priceOnly = verdict === 'over_budget' || priceRejected({ status: 'excluded', fit: page.result.reason });
+            if (informationPage(url) || verdict === 'not_listing') state.inspectedPages[url] = page.finished_at || new Date(now()).toISOString();
+            if (['excluded', 'reference'].includes(verdict) && !priceOnly) state.dismissedUrls[url] = {result:verdict,reason:page.result.reason,checkedAt:page.finished_at || new Date(now()).toISOString()};
+            else delete state.dismissedUrls[url];
+            if (priceOnly) { delete state.dismissedUrls[url]; enqueueTasks(state, [{ kind: 'price', priority: 3, url, availableAt: (Date.parse(page.finished_at) || 0) + dayMs }]); }
+            else state.queue = state.queue.filter(task => task.url !== url || task.kind !== 'price');
+          }
+          state.queue = state.queue.filter(task => !state.inspectedPages[task.url] && !state.dismissedUrls[task.url]);
+        });
         await recoverScanJobs(projectId, { get, patch });
         await publish(projectId, store, { now });
         return;
@@ -498,7 +519,21 @@ export function startScan({
       try {
         if (now() - lastRefresh >= idleMs) {
           const rows = await listings(projectId);
-          await store.update(state => enqueueTasks(state, catalogTasks(rows)));
+          await store.update(state => {
+            const tasks = catalogTasks(rows);
+            for (const row of rows) {
+              for (const url of [row.source_url, ...(row.source_urls || [])].map(canonicalUrl).filter(Boolean)) {
+                if (catalogPriority(row) === null) state.dismissedUrls[url] = { result: row.status, reason: row.fit, checkedAt: new Date(now()).toISOString() };
+                else delete state.dismissedUrls[url];
+              }
+            }
+            const known = new Set(rows.flatMap(row => [row.source_url, ...(row.source_urls || [])]).map(canonicalUrl).filter(Boolean));
+            state.queue = state.queue.filter(task => !state.dismissedUrls[task.url] && !(task.kind === 'price' && known.has(task.url)));
+            const byId = new Map(tasks.map(task => [task.listingId, task]));
+            state.queue = state.queue.filter(task => task.kind !== 'existing' || byId.has(task.listingId))
+              .map(task => task.kind === 'existing' ? { ...task, ...byId.get(task.listingId) } : task);
+            enqueueTasks(state, tasks);
+          });
           await publish(projectId, store, { now });
           lastRefresh = now();
         }

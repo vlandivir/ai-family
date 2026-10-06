@@ -86,8 +86,8 @@ test("catalog loading paginates past 1000 and queues recent rows for their next 
   const paths = [];
   const rows = await readListings("project", async path => {
     paths.push(path);
-    return path.endsWith("offset=0") ? Array.from({ length: 1000 }, (_, id) => ({ id, source_url: `https://4zida.rs/${id}`, details: {} }))
-      : [{ id: "recent", source_url: "https://4zida.rs/recent", details: { availabilityCheckedAt: new Date(now).toISOString() } }];
+    return path.endsWith("offset=0") ? Array.from({ length: 1000 }, (_, id) => ({ id, status: "fit", source_url: `https://4zida.rs/${id}`, details: {} }))
+      : [{ id: "recent", status: "fit", source_url: "https://4zida.rs/recent", details: { availabilityCheckedAt: new Date(now).toISOString() } }];
   });
   assert.equal(rows.length, 1001);
   assert.match(paths[1], /offset=1000$/);
@@ -97,13 +97,13 @@ test("catalog loading paginates past 1000 and queues recent rows for their next 
 
 test("a new listing is analyzed once without a preliminary fetch in its own agent context", async () => {
   let invocation;
-  await checkTask({ ...task("new"), checkedAt: new Date(now).toISOString(), maxPriceEur: 250000, scenario: "newbuild" }, { project: "belgrade-apartments" }, "project", {
+  await checkTask({ ...task("new"), checkedAt: new Date(now).toISOString(), maxPriceEur: 240000, scenario: "newbuild" }, { project: "belgrade-apartments" }, "project", {
     get: async () => { throw new Error("new listing must not run old checks"); },
     analyze: async (...args) => { invocation = args; return "card"; },
   });
   assert.equal(invocation[0].userId, "scan:belgrade-apartments:check");
   assert.equal(invocation[1], invocation[0].userId);
-  assert.equal(invocation[2].scan.maxPriceEur, 250000);
+  assert.equal(invocation[2].scan.maxPriceEur, 240000);
   assert.equal(invocation[2].scan.scenario, "newbuild");
 });
 
@@ -147,9 +147,9 @@ test("restart completes interrupted scan jobs without touching Telegram jobs", a
 test("both agents write to the dashboard scan log with their identity and details", async () => {
   const inserted = [];
   const insert = async (table, row) => inserted.push({ table, row });
-  await recordScan("project", { source_url: "https://example.com/search", action: "search_page", result: "scanned", details: { foundCount: 5 } }, { insert });
-  await recordScan("project", { source_url: "https://example.com/listing", action: "recheck", result: "price_changed", details: { price: 175000 } }, { insert });
-  await recordScan("project", { source_url: "https://example.com/new", action: "analyze", result: "started" }, { insert });
+  await recordScan("project", { source_url: "https://4zida.rs/search", action: "search_page", result: "scanned", details: { foundCount: 5 } }, { insert });
+  await recordScan("project", { source_url: "https://4zida.rs/listing", action: "recheck", result: "price_changed", details: { price: 175000 } }, { insert });
+  await recordScan("project", { source_url: "https://4zida.rs/new", action: "analyze", result: "started" }, { insert });
   assert.deepEqual(inserted.map(item => item.table), ["scan_events", "scan_events", "scan_events"]);
   assert.deepEqual(inserted.map(item => item.row.details.agent), ["search", "checker", "checker"]);
   assert.equal(inserted[0].row.details.foundCount, 5);
@@ -189,7 +189,7 @@ test("queue snapshot explains readiness and groups work by source and scenario",
   const state = normalizeScanState({ queue: [
     { ...task("ready"), scenario: "living" },
     { kind: "new", scenario: "houses", url: "https://cityexpert.rs/prodaja-nekretnina/beograd/123/example", availableAt: now + dayMs },
-  ], dismissedUrls: { "https://example.com/rejected": { result: "excluded" } } }, now);
+  ], dismissedUrls: { "https://4zida.rs/rejected": { result: "excluded" } } }, now);
   const snapshot = queueSnapshot(state, now);
   assert.equal(snapshot.queueTotal, 2);
   assert.equal(snapshot.ready, 1);

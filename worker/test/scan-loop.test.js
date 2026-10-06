@@ -20,7 +20,7 @@ function memoryStore(initial = {}) {
 }
 const record = async () => {};
 const basics = { get: async path => path.startsWith("projects?") ? [{ id: "project" }] : [], loadTopic: async () => topic,
-  listings: async () => [], notify: async () => {}, now: () => time, idleMs: 60_000,
+  listings: async () => ["old", "other"].map(id => ({id, status: "fit", source_url: `https://4zida.rs/${id}`, details: {}})), notify: async () => {}, now: () => time, idleMs: 60_000,
   request: operation => operation(), publish: async () => {} };
 
 test("a temporary startup database failure retries instead of permanently disabling both workers", { timeout: 2000 }, async () => {
@@ -76,10 +76,10 @@ test("background checker drains a mixed queue continuously and never checks two 
   });
   try {
     await started.promise;
-    assert.deepEqual(order, ["existing"]);
+    assert.deepEqual(order, ["new"]);
     release.resolve();
     await done.promise;
-    assert.deepEqual(order, ["existing", "new", "existing"]);
+    assert.deepEqual(order, ["new", "existing", "existing"]);
     assert.equal(peak, 1);
   } finally { release.resolve(); await worker.stop(); }
 });
@@ -90,7 +90,7 @@ test("independent search persists newly discovered work while the checker is bus
   const order = [];
   const worker = startScan({ ...basics, store: memory.store,
     search: (a, b, c, options) => searchSweep(a, b, c, { ...options, record,
-      repo: async () => "/repo", searches: async () => [{ url: "https://4zida.rs/prodaja-stanova/beograd", maxPriceEur: 200000 }], listings: async () => [],
+      repo: async () => "/repo", searches: async () => [{ url: "https://4zida.rs/prodaja-stanova/beograd", maxPriceEur: 240000 }], listings: async () => [],
       fetch: async () => { await started.promise; return { status: 200, html: `<a href="${url}">listing</a>` }; },
       wake: () => { options.wake(); discovered.resolve(); },
     }),
@@ -105,10 +105,10 @@ test("independent search persists newly discovered work while the checker is bus
     await discovered.promise;
     const saved = memory.saved();
     assert.equal(saved.activeTask.kind, "existing");
-    assert.equal(saved.queue[0].url, url);
+    assert.ok(saved.queue.some(task => task.url === url));
     release.resolve();
     await drained.promise;
-    assert.deepEqual(order, ["existing", "new"]);
+    assert.deepEqual(order.slice(0, 2), ["existing", "new"]);
   } finally { release.resolve(); await worker.stop(); }
 });
 
@@ -137,22 +137,22 @@ test("shutdown waits for both active lanes and starts no next listing", { timeou
   await stopping;
   assert.equal(checks, 1);
   assert.equal(searches, 1);
-  assert.equal((await store.read()).queue.length, 1);
+  assert.equal((await store.read()).queue.length, 2);
 });
 
 test("full search sweep skips blocked sites, follows filtered pagination and deduplicates loops", async () => {
   const { store } = memoryStore();
-  const first = "https://4zida.rs/prodaja-stanova/beograd?budget=200000";
+  const first = "https://4zida.rs/prodaja-stanova/beograd?budget=240000";
   const second = `${first}&page=2`;
   const blocked = "https://halooglasi.com/nekretnine/prodaja-stanova/beograd";
   const fetched = [], events = [];
   await searchSweep(topic, "project", store, {
-    repo: async () => "/repo", searches: async () => [{ url: first, scenario: "living", maxPriceEur: 200000 }, { url: blocked }], listings: async () => [], now: () => time,
+    repo: async () => "/repo", searches: async () => [{ url: first, scenario: "living", maxPriceEur: 240000 }, { url: blocked }], listings: async () => [], now: () => time,
     record: async (project, event) => events.push(event),
     fetch: async page => {
       fetched.push(page);
       if (page === blocked) return { status: 403, html: "blocked" };
-      return { status: 200, html: `<a href="http://[">malformed</a><a href="${url}">listing</a><a href="${second}">next</a><a href="${first}">back</a><a href="?budget=999999&page=3">wrong budget</a><a href="https://other.com/?budget=200000&page=3">other site</a>` };
+      return { status: 200, html: `<a href="http://[">malformed</a><a href="${url}">listing</a><a href="${second}">next</a><a href="${first}">back</a><a href="?budget=999999&page=3">wrong budget</a><a href="https://other.com/?budget=240000&page=3">other site</a>` };
     },
   });
   assert.deepEqual(fetched, [first, second]);
@@ -160,18 +160,18 @@ test("full search sweep skips blocked sites, follows filtered pagination and ded
   const state = await store.read();
   assert.equal(state.queue.length, 1);
   assert.equal(state.queue[0].scenario, "living");
-  assert.equal(state.queue[0].maxPriceEur, 200000);
+  assert.equal(state.queue[0].maxPriceEur, 240000);
   assert.equal(state.searchRun, null);
 });
 
-test("a completed sweep runs again at exactly twelve hours, not earlier", async () => {
+test("a completed sweep runs again at the next scheduled Belgrade slot", async () => {
   const { store } = memoryStore();
   let clock = time, fetches = 0;
   const deps = { repo: async () => "/repo", searches: async () => [{ url: "https://4zida.rs/search" }], listings: async () => [], record, now: () => clock,
     fetch: async () => { fetches++; return { status: 200, html: "" }; },
   };
   assert.equal(await searchSweep(topic, "project", store, deps), true);
-  clock += 12 * 60 * 60 * 1000 - 1;
+  clock += 2 * 60 * 60 * 1000 - 1;
   assert.equal(await searchSweep(topic, "project", store, deps), false);
   assert.equal(fetches, 1);
   clock++;
@@ -225,4 +225,12 @@ test("search wake delivered while checker decides it is idle is not lost", { tim
   try { await processed.promise; }
   finally { await worker.stop(); }
   assert.ok(nextCalls >= 2);
+});
+
+test('a new scheduled slot refreshes first pages before unfinished house pagination', async () => {
+  const { store }=memoryStore({policyVersion:3,lastDiscovery:'2026-09-29T08:00:00Z',searchRun:{remaining:[{url:'https://4zida.rs/house-page-50',scenario:'houses'}],visited:[]}});
+  const fetched=[];
+  await searchSweep(topic,'project',store,{now:()=>time+2*60*60*1000,repo:async()=>'/repo',searches:async()=>[{url:'https://4zida.rs/apartments',scenario:'rental'}],listings:async()=>[],record,
+    fetch:async url=>{fetched.push(url);return {status:200,html:''};}});
+  assert.deepEqual(fetched,['https://4zida.rs/apartments','https://4zida.rs/house-page-50']);
 });

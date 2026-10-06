@@ -87,3 +87,12 @@ test("house price changes and removals update the database quietly", async () =>
     else assert.equal(updates[0].details.availabilityStatus, "removed");
   }
 });
+
+test('a previously suitable apartment becomes a price-only exclusion above 240k', async () => {
+  let updated;
+  const changes=await recheck([{id:'listing',status:'fit',asking_price_eur:230000,source_url:'https://4zida.rs/listing',details:{category:'living'}}],24,'project',{
+    fetch:async()=>({status:200,html:'<script type="application/ld+json">{"@type":"Offer","price":245000}</script>'}),
+    patch:async(path,row)=>{updated=row;},record:async()=>{},
+  });
+  assert.equal(updated.status,'excluded');assert.equal(updated.details.exclusionReason,'over_budget');assert.equal(changes.length,1);
+});

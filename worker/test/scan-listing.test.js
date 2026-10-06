@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { runListing } from "../src/queue.js";
 
 const checkedAt = "2026-09-29T08:00:00.000Z";
-const topic = { project: "belgrade-apartments", repo: "owner/repo", scan: { checkedAt, maxPriceEur: 200000, scenario: "living" } };
+const topic = { project: "belgrade-apartments", repo: "owner/repo", scan: { checkedAt, maxPriceEur: 240000, scenario: "living" } };
 const url = "https://4zida.rs/listing/123";
 const message = { inGroup: false, chatId: 0, userId: "scan:check", text: url };
 function setup(card = { is_listing: true, status: "fit", category: "living", address: "Belgrade", asking_price_eur: 180000 }, known = [], current = {}) {
@@ -34,7 +34,7 @@ test("background listing jobs use independent source and store daily check stamp
   assert.match(outcome.notification, /https:\/\/4zida.rs\/listing\/123/);
   assert.equal(mock.inserted[0].row.source, "scan");
   assert.match(mock.prompt, /Сценарий поиска: living/);
-  assert.match(mock.prompt, /не больше 200000 EUR/);
+  assert.match(mock.prompt, /не больше 240000 EUR/);
   assert.match(mock.prompt, /запросы к сайтам не чаще одного раза в 60 секунд/);
   const row = mock.inserted.find(item => item.table === "listings").row;
   assert.equal(row.details.availabilityCheckedAt, checkedAt);
@@ -165,4 +165,18 @@ test("known house price changes are persisted without notifications", async () =
   const outcome = await runListing(message, "scan:check", topic, url, undefined, mock.dependencies);
   assert.equal(outcome.notification, null);
   assert.equal(mock.patched.find(x => x.path === "listings?id=eq.existing").row.asking_price_eur, 170000);
+});
+
+test('price-only excluded card may become suitable under 240k but other exclusions remain final', async () => {
+  const mock = setup({ is_listing: true, status: 'fit', category: 'living', asking_price_eur: 230000 },
+    [{id:'existing',source_url:url}], {catalog_number:182,status:'excluded',fit:'Цена выше лимита 200000 EUR',asking_price_eur:230000,details:{exclusionReason:'over_budget'}});
+  await runListing(message,'scan:check',topic,url,undefined,mock.dependencies);
+  const update=mock.patched.find(item=>item.path==='listings?id=eq.existing').row;
+  assert.equal(update.status,'fit');assert.equal(update.details.exclusionReason,null);
+});
+
+test('a rejection for both price and location never enters price-only reconsideration', async () => {
+  const mock=setup({is_listing:true,status:'excluded',category:'living',neighborhood:'Karaburma',asking_price_eur:250000});
+  await runListing(message,'scan:check',topic,url,undefined,mock.dependencies);
+  assert.equal(mock.patched.at(-1).row.result.scanResult,'excluded');
 });
