@@ -275,13 +275,35 @@ export function paginationUrls(html, baseUrl) {
     const keys = new Set([...base.searchParams.keys(), ...target.searchParams.keys()]);
     let pageChanged = false, sameFilters = true;
     for (const key of keys) {
-      if (/^(page|strana|stranica|pagenumber)$/i.test(key)) {
+      if (/^(page|strana|stranica|pagenumber|currentpage)$/i.test(key)) {
         pageChanged ||= target.searchParams.get(key) !== base.searchParams.get(key);
       } else if (base.searchParams.getAll(key).join("\0") !== target.searchParams.getAll(key).join("\0")) sameFilters = false;
     }
     if (pageChanged && sameFilters) {
       target.hash = "";
       found.add(target.toString());
+    }
+  }
+  if (/^(?:www\.)?cityexpert\.rs$/.test(base.hostname) && /^\/(?:prodaja|izdavanje)-nekretnina\/[^/]+\/?$/.test(base.pathname)) {
+    // Angular renders pagination buttons without hrefs. Its transfer state contains
+    // the real Search response; currentPage is the public URL parameter used by the site.
+    for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+      if (!/\bid\s*=\s*(["'])ng-state\1/i.test(match[1])) continue;
+      let state;
+      try { state = JSON.parse(match[2]); } catch { continue; }
+      for (const entry of Object.values(state || {})) {
+        const info = entry?.b?.info;
+        let requestUrl;
+        try { requestUrl = new URL(entry?.u, base); } catch { continue; }
+        if (requestUrl.origin !== base.origin || requestUrl.pathname !== '/api/Search' || !Array.isArray(entry?.b?.result)) continue;
+        const current = info?.pageNumber, total = info?.pageCount;
+        if (!Number.isInteger(current) || !Number.isInteger(total) || current < 1 || total <= current) continue;
+        if (current !== Number(base.searchParams.get('currentPage') || 1)) continue;
+        const next = new URL(base);
+        next.hash = '';
+        next.searchParams.set('currentPage', String(current + 1));
+        found.add(next.toString());
+      }
     }
   }
   return [...found];

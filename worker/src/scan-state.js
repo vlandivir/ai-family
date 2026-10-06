@@ -70,11 +70,11 @@ function legacyTask(value) {
 export function normalizeScanState(value = {}, now = Date.now()) {
   const legacyAnalyzed = value.analyzed || 0;
   const state = {
-    version: 3, policyVersion: 3, queue: [], checkedUrls: {}, analyzedOn: value.analyzedOn || null,
+    version: 3, policyVersion: 3, paginationVersion: 1, queue: [], checkedUrls: {}, analyzedOn: value.analyzedOn || null,
     analyzed: legacyAnalyzed,
     apartmentAnalyzed: value.apartmentAnalyzed ?? 0,
     houseAnalyzed: value.houseAnalyzed ?? (value.version === 3 ? 0 : legacyAnalyzed),
-    lastDiscovery: value.policyVersion === 3 ? value.lastDiscovery || null : null,
+    lastDiscovery: value.policyVersion === 3 && value.paginationVersion === 1 ? value.lastDiscovery || null : null,
     searchRun: value.policyVersion === 3 && value.searchRun ? { ...value.searchRun, remaining: value.searchRun.remaining.filter(entry => !blockedScanUrl(entry.url)).sort((a, b) => scenarioPriority(a) - scenarioPriority(b)) } : null, activeTask: null,
     notifications: value.notifications || [],
     lastRequestAt: value.lastRequestAt || null,
